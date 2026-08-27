@@ -105,7 +105,7 @@ class MultiAgentRolloutBuffer:
                 next_non_terminal = 1.0 - next_done
                 next_v = next_value
             else:
-                next_non_terminal = 1.0 - any_dones[step + 1]
+                next_non_terminal = 1.0 - any_dones[step]
                 next_v = self.values[step + 1]
 
             delta = mean_rewards[step] + self.gamma * next_v * next_non_terminal - self.values[step]
