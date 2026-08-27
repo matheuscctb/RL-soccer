@@ -192,15 +192,20 @@ pip install -e .
 
 ### 1. Iniciar o Treinamento Acelerado na GPU (Padrão: CUDA)
 
-Inicia o treinamento acelerado em GPU com 16 ambientes paralelos, salvando checkpoints em `modelos/checkpoints/` e logs em `runs/`:
+Inicia o treinamento acelerado em GPU com suporte a paralelização multi-core na CPU para simulação física, salvando checkpoints em `modelos/checkpoints/` e logs em `runs/`:
 
 ```bash
+# Execução padrão (16 ambientes paralelos distribuídos nos núcleos de CPU)
 python train_attacker.py
 ```
 
-*Para customizar parâmetros de treino na GPU:*
+*Para escalar paralelismo (ex: 64, 256 ou 2048 ambientes):*
 ```bash
-python train_attacker.py --device cuda --num-envs 16 --total-timesteps 5000000 --save-interval-steps 100000
+# Alta paralelização (ex: 64 ambientes com rollout de 100 passos)
+python train_attacker.py --num-envs 64 --num-steps 100 --batch-size 256
+
+# Escala massiva (ex: 2048 ambientes com rollout mais curto e batch maior para saturar a GPU)
+python train_attacker.py --num-envs 2048 --num-steps 20 --batch-size 1024
 ```
 
 ---

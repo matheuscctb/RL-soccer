@@ -2,6 +2,7 @@ import os
 import glob
 import time
 import argparse
+import multiprocessing as mp
 from collections import deque
 from typing import List
 
@@ -21,7 +22,8 @@ def parse_args():
         description="Treinamento MAPPO para Cooperação de Atacantes SSL-EL com TensorBoard e ONNX (cooperation_attacker)"
     )
     parser.add_argument("--total-timesteps", type=int, default=5_000_000, help="Total de passos de treino (padrão: 5.000.000)")
-    parser.add_argument("--num-envs", type=int, default=16, help="Número de ambientes paralelos (padrão: 16)")
+    parser.add_argument("--num-envs", type=int, default=16, help="Número de ambientes paralelos (ex: 16, 64, 256, 2048)")
+    parser.add_argument("--num-workers", type=int, default=0, help="Número de processos CPU workers (0 = auto / todos os núcleos)")
     parser.add_argument("--num-steps", type=int, default=200, help="Passos de rollout por atualização")
     parser.add_argument("--ppo-epochs", type=int, default=5, help="Épocas PPO por atualização")
     parser.add_argument("--batch-size", type=int, default=128, help="Tamanho do mini-batch PPO")
@@ -42,8 +44,74 @@ def parse_args():
     return parser.parse_args()
 
 
+def _worker_process(remote, parent_remote, count: int):
+    """Processo worker isolado que gerencia um subconjunto de ambientes em paralelo."""
+    parent_remote.close()
+    envs = [SSLELCooperationAttackerEnv() for _ in range(count)]
+    agents = SSLELCooperationAttackerEnv.agents
+    try:
+        while True:
+            cmd, data = remote.recv()
+            if cmd == "step":
+                results_obs = {a: [] for a in agents}
+                results_state = []
+                results_rew = {a: [] for a in agents}
+                results_done = {a: [] for a in agents}
+                results_info = []
+
+                for i, env in enumerate(envs):
+                    actions = {a: data[a][i] for a in agents}
+                    obs, rew, term, trunc, info = env.step(actions)
+                    done = term[agents[0]] or trunc[agents[0]]
+                    if done:
+                        obs, _ = env.reset()
+                    state = env.get_global_state()
+                    for a in agents:
+                        results_obs[a].append(obs[a])
+                        results_rew[a].append(rew[a])
+                        results_done[a].append(done)
+                    results_state.append(state)
+                    results_info.append(info)
+
+                remote.send((
+                    {a: np.array(results_obs[a], dtype=np.float32) for a in agents},
+                    np.array(results_state, dtype=np.float32),
+                    {a: np.array(results_rew[a], dtype=np.float32) for a in agents},
+                    {a: np.array(results_done[a], dtype=np.float32) for a in agents},
+                    results_info
+                ))
+            elif cmd == "reset":
+                results_obs = {a: [] for a in agents}
+                results_state = []
+                for env in envs:
+                    obs, _ = env.reset()
+                    state = env.get_global_state()
+                    for a in agents:
+                        results_obs[a].append(obs[a])
+                    results_state.append(state)
+                remote.send((
+                    {a: np.array(results_obs[a], dtype=np.float32) for a in agents},
+                    np.array(results_state, dtype=np.float32)
+                ))
+            elif cmd == "close":
+                for env in envs:
+                    env.close()
+                remote.close()
+                break
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        pass
+    finally:
+        for env in envs:
+            try:
+                env.close()
+            except Exception:
+                pass
+
+
 class MultiEnvWrapper:
-    """Wrapper síncrono para múltiplos ambientes paralelos."""
+    """Wrapper síncrono para poucos ambientes locais (baixo overhead em single-core)."""
     def __init__(self, num_envs: int):
         self.envs = [SSLELCooperationAttackerEnv() for _ in range(num_envs)]
         self.num_envs = num_envs
@@ -106,6 +174,87 @@ class MultiEnvWrapper:
             env.close()
 
 
+class SubprocMultiEnvWrapper:
+    """Wrapper multiprocesso paralelo escalável para dezenas, centenas ou milhares de ambientes."""
+    def __init__(self, num_envs: int, num_workers: int = 0):
+        self.num_envs = num_envs
+        self.agents = SSLELCooperationAttackerEnv.agents
+        if num_workers <= 0:
+            num_workers = min(num_envs, os.cpu_count() or 4)
+        self.num_workers = max(1, min(num_workers, num_envs))
+
+        base = num_envs // self.num_workers
+        rem = num_envs % self.num_workers
+        self.counts = [base + (1 if i < rem else 0) for i in range(self.num_workers)]
+
+        ctx = mp.get_context("spawn")
+        self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(self.num_workers)])
+        self.processes = []
+
+        for work_remote, remote, count in zip(self.work_remotes, self.remotes, self.counts):
+            p = ctx.Process(target=_worker_process, args=(work_remote, remote, count), daemon=True)
+            p.start()
+            self.processes.append(p)
+            work_remote.close()
+
+    def reset(self):
+        for remote in self.remotes:
+            remote.send(("reset", None))
+        results = [remote.recv() for remote in self.remotes]
+
+        batched_obs = {
+            a: np.concatenate([r[0][a] for r in results], axis=0)
+            for a in self.agents
+        }
+        batched_states = np.concatenate([r[1] for r in results], axis=0)
+        return batched_obs, batched_states
+
+    def step(self, actions_dict: dict):
+        numpy_actions = {a: actions_dict[a].cpu().numpy() for a in self.agents}
+        idx = 0
+        for remote, count in zip(self.remotes, self.counts):
+            worker_actions = {a: numpy_actions[a][idx:idx + count] for a in self.agents}
+            remote.send(("step", worker_actions))
+            idx += count
+
+        results = [remote.recv() for remote in self.remotes]
+
+        batched_obs = {
+            a: np.concatenate([r[0][a] for r in results], axis=0)
+            for a in self.agents
+        }
+        batched_states = np.concatenate([r[1] for r in results], axis=0)
+        batched_rewards = {
+            a: np.concatenate([r[2][a] for r in results], axis=0)
+            for a in self.agents
+        }
+        batched_dones = {
+            a: np.concatenate([r[3][a] for r in results], axis=0)
+            for a in self.agents
+        }
+        infos_list = []
+        for r in results:
+            infos_list.extend(r[4])
+
+        return batched_obs, batched_states, batched_rewards, batched_dones, infos_list
+
+    def close(self):
+        for remote in self.remotes:
+            try:
+                remote.send(("close", None))
+            except Exception:
+                pass
+        for p in self.processes:
+            p.join(timeout=1.0)
+
+
+def make_vec_env(num_envs: int, num_workers: int = 0):
+    """Fábrica para instanciar o melhor wrapper de ambientes paralelos."""
+    if num_envs <= 4 or num_workers == 1:
+        return MultiEnvWrapper(num_envs)
+    return SubprocMultiEnvWrapper(num_envs, num_workers)
+
+
 def train():
     args = parse_args()
     save_dir = args.save_dir
@@ -138,17 +287,17 @@ def train():
             args.device = "cpu"
             device_name_str = "CPU (Fallback)"
 
+    vec_env = make_vec_env(args.num_envs, args.num_workers)
+    workers_info = getattr(vec_env, "num_workers", 1)
     print("=" * 75)
     print(f" 🚀 INICIANDO TREINAMENTO MAPPO: {args.exp_name}")
     print(f" 📂 Modelos (.pt e .onnx): {save_dir}/ | Checkpoints: {ckpt_dir}/")
     print(f" 📊 TensorBoard Logs: {tb_log_dir}/")
-    print(f" ⚡ Dispositivo: {device_name_str} | Ambientes Paralelos: {args.num_envs}")
+    print(f" ⚡ Dispositivo: {device_name_str} | Ambientes: {args.num_envs} ({workers_info} CPU Workers)")
     print(f" 🎯 Total Timesteps: {args.total_timesteps:,} | Passos por Rollout: {args.num_steps}")
     print(f" 💾 Checkpoints a cada: {args.save_interval_steps:,} passos (salvos em .pt e .onnx)")
     print(f" 📈 Para abrir o TensorBoard: tensorboard --logdir {args.tensorboard_dir}")
     print("=" * 75)
-
-    vec_env = MultiEnvWrapper(args.num_envs)
     agents = vec_env.agents
     obs_dim = SSLELCooperationAttackerEnv().num_local_obs
     state_dim = SSLELCooperationAttackerEnv().num_state_features
