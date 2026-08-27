@@ -158,26 +158,26 @@ A cada checkpoint (a cada $100.000$ passos por padrão) e ao término do treinam
 ## 📦 Instalação e Requisitos
 
 > [!IMPORTANT]
-> **Ambiente Virtual Obrigatório (`venv`)**:
-> É altamente recomendado criar e ativar um ambiente virtual Python dedicado para evitar conflitos de bibliotecas com o sistema e garantir compatibilidade total entre o simulador `rc-robosim`, `PyTorch` e o `gymnasium`.
+> **Aceleração por GPU NVIDIA (CUDA 12.1+ / RTX 3060)**:
+> Esta branch (`gpu`) é otimizada para placas NVIDIA (como RTX 3060 / Ampere), habilitando automaticamente **Tensor Cores (TF32)** e **cuDNN Benchmark** para velocidade máxima de treinamento.
 
-### Passo a Passo de Instalação:
+### Passo a Passo de Instalação na Máquina com GPU:
 
 ```bash
-# 1. Clonar o repositório e entrar na pasta
-git clone https://github.com/matheuscctb/RL-soccer.git
+# 1. Clonar o repositório e entrar na pasta (selecionando a branch gpu)
+git clone -b gpu https://github.com/matheuscctb/RL-soccer.git
 cd RL-soccer
 
 # 2. Criar o ambiente virtual (Python 3.10 recomendado)
 python3 -m venv venv
 
 # 3. Ativar o ambiente virtual
-# No Linux / macOS:
+# No Linux:
 source venv/bin/activate
 # No Windows:
 # venv\Scripts\activate
 
-# 4. Atualizar o pip e instalar as dependências
+# 4. Atualizar o pip e instalar as dependências com suporte a CUDA
 pip install --upgrade pip
 pip install -r requirements.txt
 
@@ -188,20 +188,19 @@ pip install -e .
 
 ---
 
-## 🚀 Como Executar
+## 🚀 Como Executar com GPU
 
-### 1. Iniciar o Treinamento (5 Milhões de Passos)
+### 1. Iniciar o Treinamento Acelerado na GPU (Padrão: CUDA)
 
-
-Inicia o treinamento com 8 ambientes paralelos salvando checkpoints em `modelos/checkpoints/` e logs em `runs/`:
+Inicia o treinamento acelerado em GPU com 16 ambientes paralelos, salvando checkpoints em `modelos/checkpoints/` e logs em `runs/`:
 
 ```bash
 python train_attacker.py
 ```
 
-*Para alterar hiperparâmetros:*
+*Para customizar parâmetros de treino na GPU:*
 ```bash
-python train_attacker.py --total-timesteps 5000000 --num-envs 8 --save-interval-steps 100000
+python train_attacker.py --device cuda --num-envs 16 --total-timesteps 5000000 --save-interval-steps 100000
 ```
 
 ---

@@ -21,7 +21,7 @@ def parse_args():
         description="Treinamento MAPPO para Cooperação de Atacantes SSL-EL com TensorBoard e ONNX (cooperation_attacker)"
     )
     parser.add_argument("--total-timesteps", type=int, default=5_000_000, help="Total de passos de treino (padrão: 5.000.000)")
-    parser.add_argument("--num-envs", type=int, default=8, help="Número de ambientes paralelos (padrão: 8)")
+    parser.add_argument("--num-envs", type=int, default=16, help="Número de ambientes paralelos (padrão: 16)")
     parser.add_argument("--num-steps", type=int, default=200, help="Passos de rollout por atualização")
     parser.add_argument("--ppo-epochs", type=int, default=5, help="Épocas PPO por atualização")
     parser.add_argument("--batch-size", type=int, default=128, help="Tamanho do mini-batch PPO")
@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument("--exp-name", type=str, default="cooperation_attacker", help="Nome do experimento")
     parser.add_argument("--save-dir", type=str, default="modelos", help="Diretório onde os modelos e checkpoints serão salvos")
     parser.add_argument("--tensorboard-dir", type=str, default="runs", help="Diretório de logs do TensorBoard (padrão: runs)")
-    parser.add_argument("--device", type=str, default="cpu", help="Dispositivo de execução (padrão: cpu)")
+    parser.add_argument("--device", type=str, default="cuda", help="Dispositivo de execução (padrão: cuda)")
     parser.add_argument("--resume", action="store_true", help="Retomar o treinamento automaticamente a partir do último checkpoint")
     parser.add_argument("--resume-path", type=str, default="", help="Caminho específico de um checkpoint (.pt) para retomar o treino")
     return parser.parse_args()
@@ -121,11 +121,28 @@ def train():
     tb_log_dir = os.path.join(args.tensorboard_dir, f"{args.exp_name}_{timestamp_str}")
     writer = SummaryWriter(log_dir=tb_log_dir)
 
+    # Otimizações de GPU CUDA (Ampere Tensor Cores / RTX 3060)
+    device_name_str = args.device
+    if args.device.startswith("cuda"):
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+            if hasattr(torch.backends.cudnn, "allow_tf32"):
+                torch.backends.cudnn.allow_tf32 = True
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            device_name_str = f"GPU: {gpu_name} ({gpu_vram:.1f} GB VRAM) [CUDA]"
+        else:
+            print("[!] AVISO: 'cuda' foi selecionado mas não há GPU NVIDIA disponível. Recorrendo a 'cpu'.")
+            args.device = "cpu"
+            device_name_str = "CPU (Fallback)"
+
     print("=" * 75)
     print(f" 🚀 INICIANDO TREINAMENTO MAPPO: {args.exp_name}")
     print(f" 📂 Modelos (.pt e .onnx): {save_dir}/ | Checkpoints: {ckpt_dir}/")
     print(f" 📊 TensorBoard Logs: {tb_log_dir}/")
-    print(f" ⚡ Dispositivo: {args.device} | Ambientes Paralelos: {args.num_envs}")
+    print(f" ⚡ Dispositivo: {device_name_str} | Ambientes Paralelos: {args.num_envs}")
     print(f" 🎯 Total Timesteps: {args.total_timesteps:,} | Passos por Rollout: {args.num_steps}")
     print(f" 💾 Checkpoints a cada: {args.save_interval_steps:,} passos (salvos em .pt e .onnx)")
     print(f" 📈 Para abrir o TensorBoard: tensorboard --logdir {args.tensorboard_dir}")

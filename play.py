@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument("--no-render", dest="render", action="store_false", help="Desativar renderizador gráfico")
     parser.set_defaults(render=True)
     parser.add_argument("--fps", type=int, default=40, help="Taxa de quadros (FPS) para renderização (padrão: 40 Hz)")
-    parser.add_argument("--device", type=str, default="cpu", help="Dispositivo para inferência (padrão: cpu)")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Dispositivo para inferência (padrão: cuda se disponível, senão cpu)")
     return parser.parse_args()
 
 

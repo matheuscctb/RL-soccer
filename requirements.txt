@@ -1,14 +1,14 @@
 # ==============================================================================
-# RL-Soccer: Dependências para Treinamento MAPPO e Simulação SSL-EL (Modo CPU)
+# RL-Soccer: Dependências para Treinamento MAPPO e Simulação SSL-EL (Modo GPU / CUDA)
 # REQUISITO: Crie e ative um ambiente virtual antes de instalar:
 #   python3 -m venv venv && source venv/bin/activate
 #   pip install -r requirements.txt
 # ==============================================================================
 
-# Repositório oficial do PyTorch otimizado para CPU (sem binários pesados CUDA/GPU)
---extra-index-url https://download.pytorch.org/whl/cpu
+# Repositório oficial do PyTorch com suporte a CUDA 12.1+ para placas NVIDIA (ex: RTX 3060)
+--extra-index-url https://download.pytorch.org/whl/cu121
 
-# Core Deep Learning & Reinforcement Learning (Versão CPU)
+# Core Deep Learning & Reinforcement Learning (Versão CUDA)
 torch>=2.0.0
 gymnasium>=0.28.1
 numpy>=1.23.0
@@ -21,9 +21,9 @@ pygame>=2.1.0
 tensorboard>=2.10.0
 tqdm>=4.65.0
 
-# Exportação e Inferência de Modelos em Tempo Real (CPU)
+# Exportação e Inferência de Modelos em Tempo Real (Aceleração GPU)
 onnx>=1.14.0
-onnxruntime>=1.15.0
+onnxruntime-gpu>=1.15.0
 
 # Biblioteca Auxiliar de RL (Opcional / Benchmark)
 stable-baselines3>=2.0.0
