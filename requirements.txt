@@ -1,0 +1,30 @@
+# ==============================================================================
+# RL-Soccer: Dependências para Treinamento MAPPO e Simulação SSL-EL (Modo CPU)
+# REQUISITO: Crie e ative um ambiente virtual antes de instalar:
+#   python3 -m venv venv && source venv/bin/activate
+#   pip install -r requirements.txt
+# ==============================================================================
+
+# Repositório oficial do PyTorch otimizado para CPU (sem binários pesados CUDA/GPU)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Core Deep Learning & Reinforcement Learning (Versão CPU)
+torch>=2.0.0
+gymnasium>=0.28.1
+numpy>=1.23.0
+
+# Simulador de Futebol de Robôs (RoboCup SSL e VSSS)
+rc-robosim>=1.2
+pygame>=2.1.0
+
+# Monitoramento, Barra de Progresso e Métricas
+tensorboard>=2.10.0
+tqdm>=4.65.0
+
+# Exportação e Inferência de Modelos em Tempo Real (CPU)
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# Biblioteca Auxiliar de RL (Opcional / Benchmark)
+stable-baselines3>=2.0.0
+

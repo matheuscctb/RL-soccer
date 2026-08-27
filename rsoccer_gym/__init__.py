@@ -28,3 +28,12 @@ register(
     entry_point="rsoccer_gym.ssl.ssl_hw_challenge:SSLPassEnduranceEnv",
     max_episode_steps=1200,
 )
+
+register(
+    id="SSL-EL-CooperationAttacker-v0",
+    entry_point="rsoccer_gym.ssl.ssl_el_cooperation_attacker:SSLELCooperationAttackerEnv",
+    max_episode_steps=600,
+)
+
+
+

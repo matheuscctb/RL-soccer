@@ -148,8 +148,13 @@ cython_debug/
 # VSCode
 .vscode/
 
-# Models
+# Models & Checkpoints
 *.pth
+*.pt
+*.onnx
+modelos/checkpoints/*
+modelos/cooperation_attacker/*
+
 
 # Logs
 *tfevents*
