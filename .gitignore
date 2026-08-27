@@ -150,10 +150,6 @@ cython_debug/
 
 # Models & Checkpoints
 *.pth
-*.pt
-*.onnx
-modelos/checkpoints/*
-modelos/cooperation_attacker/*
 
 
 # Logs
