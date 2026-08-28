@@ -91,9 +91,9 @@ def play():
     passes = 0
 
     print("=" * 65)
-    print(f" Iniciando Partida SSL-EL: cooperation_attacker (2 Azuis vs Defesa)")
+    print(f" Iniciando: cooperation_attacker")
     print(f" Total de Episódios: {args.episodes} | Renderização: {args.render}")
-    print("=" * 65)
+    
 
     for ep in range(1, args.episodes + 1):
         obs, _ = env.reset()
@@ -120,17 +120,17 @@ def play():
         if shaping is not None:
             if shaping.get("goal", 0.0) > 0:
                 goals += 1
-                print(f" [Ep {ep:02d}] ⚽ GOL MARCADO! | Passos: {step_count:03d} | Recompensa: {ep_reward['blue_0']:+06.2f}")
+                print(f" [Ep {ep:02d}] GOL MARCADO! | Passos: {step_count:03d} | Recompensa: {ep_reward['blue_0']:+06.2f}")
             elif shaping.get("pass_success", 0.0) > 0:
                 passes += 1
-                print(f" [Ep {ep:02d}] 🎯 Passe Concluído! | Passos: {step_count:03d} | Recompensa: {ep_reward['blue_0']:+06.2f}")
+                print(f" [Ep {ep:02d}] Passe Concluído! | Passos: {step_count:03d} | Recompensa: {ep_reward['blue_0']:+06.2f}")
             else:
-                print(f" [Ep {ep:02d}] ⏹ Fim de jogada | Passos: {step_count:03d} | Recompensa: {ep_reward['blue_0']:+06.2f}")
+                print(f" [Ep {ep:02d}] Fim de jogada | Passos: {step_count:03d} | Recompensa: {ep_reward['blue_0']:+06.2f}")
 
     env.close()
     print("=" * 65)
     print(f" Resumo Final: {args.episodes} Episódios | Gols: {goals} | Passes: {passes}")
-    print("=" * 65)
+   
 
 
 if __name__ == "__main__":

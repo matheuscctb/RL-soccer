@@ -13,7 +13,7 @@ from mappo import MAPPOTrainer
 
 
 def get_latest_checkpoint_info(search_dir: str = "modelos") -> Tuple[Optional[str], float]:
-    """Retorna o caminho e o timestamp de modificação do checkpoint mais recente."""
+    """Retorna o caminho e o timestamp de modificação do checkpoint mais recente"""
     priority_candidates = [
         os.path.join(search_dir, "checkpoints", "mappo_latest.pt"),
         os.path.join(search_dir, "mappo_best.pt"),
@@ -37,7 +37,7 @@ def get_latest_checkpoint_info(search_dir: str = "modelos") -> Tuple[Optional[st
 
 
 def extract_step_count(filepath: str, ckpt_dict: dict = None) -> Optional[int]:
-    """Extrai a contagem de passos do checkpoint."""
+    """Extrai a contagem de passos do checkpoint"""
     if ckpt_dict and "total_steps" in ckpt_dict:
         return ckpt_dict["total_steps"]
     match = re.search(r"mappo_step_(\d+)\.pt", filepath)
@@ -78,13 +78,11 @@ def live_watch():
     last_loaded_mtime = 0.0
     current_ckpt_steps = "Inicial (0)"
 
-    print("=" * 75)
-    print(" 📡 PLAY ATTACKER: MONITORAMENTO AO VIVO DO TREINAMENTO (SSL-EL)")
+    
+    print(" PLAY ATTACKER: MONITORAMENTO AO VIVO DO TREINAMENTO (SSL-EL)")
     print(f" Monitorando pasta: '{args.save_dir}/' e '{args.save_dir}/checkpoints/'")
-    print(" Cada novo checkpoint salvo a cada 100 mil passos será recarregado ao vivo!")
-    print(" Você pode deixar esta janela aberta enquanto o treino roda no outro terminal.")
     print(" Pressione Ctrl+C para encerrar o monitoramento.")
-    print("=" * 75)
+    
 
     episode = 0
     total_goals = 0
@@ -109,14 +107,14 @@ def live_watch():
                     current_ckpt_steps = f"{steps_found:,} passos" if steps_found else "Mais recente"
                     mod_time_str = time.strftime("%H:%M:%S", time.localtime(latest_mtime))
 
-                    print("\n" + "🔥" * 38)
+                  
                     print(f" [LIVE UPDATE] NOVO CHECKPOINT DETECTADO E RECARREGADO!")
-                    print(f" 🎯 Marco de Evolução: {current_ckpt_steps}")
-                    print(f" 📂 Arquivo: {latest_path}")
-                    print(f" ⏰ Horário: {mod_time_str}")
-                    print("🔥" * 38 + "\n")
+                    print(f" Marco de Evolução: {current_ckpt_steps}")
+                    print(f" Arquivo: {latest_path}")
+                    print(f" Horário: {mod_time_str}")
+                    
                 except Exception as e:
-                    print(f"[!] Aguardando escrita do checkpoint ({e})...")
+                    print(f"Aguardando escrita do checkpoint ({e})...")
 
             # Atualizar título da janela PyGame se estiver renderizando
             if args.render and pygame.display.get_init():
@@ -161,7 +159,7 @@ def live_watch():
                 recent_goals_window.pop(0)
 
             goal_rate = (sum(recent_goals_window) / len(recent_goals_window)) * 100
-            status_icon = "⚽ GOL!" if is_goal else ("🎯 PASSE!" if is_pass else "⏹")
+            status_icon = "gol" if is_goal else ("passe" if is_pass else "")
             print(
                 f"[Ao Vivo | Ep {episode:04d} | CKPT: {current_ckpt_steps}] {status_icon:8s} | "
                 f"Passos: {step_count:03d} | "

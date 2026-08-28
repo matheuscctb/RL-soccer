@@ -122,13 +122,13 @@ def train():
     writer = SummaryWriter(log_dir=tb_log_dir)
 
     print("=" * 75)
-    print(f" 🚀 INICIANDO TREINAMENTO MAPPO: {args.exp_name}")
-    print(f" 📂 Modelos (.pt e .onnx): {save_dir}/ | Checkpoints: {ckpt_dir}/")
-    print(f" 📊 TensorBoard Logs: {tb_log_dir}/")
-    print(f" ⚡ Dispositivo: {args.device} | Ambientes Paralelos: {args.num_envs}")
-    print(f" 🎯 Total Timesteps: {args.total_timesteps:,} | Passos por Rollout: {args.num_steps}")
-    print(f" 💾 Checkpoints a cada: {args.save_interval_steps:,} passos (salvos em .pt e .onnx)")
-    print(f" 📈 Para abrir o TensorBoard: tensorboard --logdir {args.tensorboard_dir}")
+    print(f" INICIANDO TREINAMENTO MAPPO: {args.exp_name}")
+    print(f" Modelos (.pt e .onnx): {save_dir}/ | Checkpoints: {ckpt_dir}/")
+    print(f" TensorBoard Logs: {tb_log_dir}/")
+    print(f" Dispositivo: {args.device} | Ambientes Paralelos: {args.num_envs}")
+    print(f" Total Timesteps: {args.total_timesteps:,} | Passos por Rollout: {args.num_steps}")
+    print(f" Checkpoints a cada: {args.save_interval_steps:,} passos (salvos em .pt e .onnx)")
+    print(f" Para abrir o TensorBoard: tensorboard --logdir {args.tensorboard_dir}")
     print("=" * 75)
 
     vec_env = MultiEnvWrapper(args.num_envs)
@@ -202,15 +202,15 @@ def train():
     if resume_target and os.path.exists(resume_target):
         print("\n" + "🔄" * 38)
         print(f" [RESUME] RETOMANDO TREINAMENTO A PARTIR DO CHECKPOINT:")
-        print(f" 📂 Arquivo: {resume_target}")
+        print(f"  Arquivo: {resume_target}")
         ckpt_meta = trainer.load(resume_target, load_optimizers=True)
         total_steps = ckpt_meta.get("total_steps", 0)
         last_saved_step = total_steps
         goals_scored = ckpt_meta.get("goals_scored", 0)
         passes_completed = ckpt_meta.get("passes_completed", 0)
         start_update = (total_steps // (args.num_steps * args.num_envs)) + 1
-        print(f" 🎯 Passos Anteriores: {total_steps:,} | Gols: {goals_scored} | Passes: {passes_completed}")
-        print(f" ⚡ Continuando da iteração {start_update} até {num_updates}!")
+        print(f" Passos Anteriores: {total_steps:,} | Gols: {goals_scored} | Passes: {passes_completed}")
+        print(f" ⚡Continuando da iteração {start_update} até {num_updates}!")
         print("🔄" * 38 + "\n")
 
     start_time = time.time()
