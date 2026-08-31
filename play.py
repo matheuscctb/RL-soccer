@@ -12,23 +12,10 @@ from mappo import MAPPOTrainer
 
 def find_latest_checkpoint(search_dir: str = "modelos") -> Optional[str]:
     """Busca o modelo mais recente salvo na pasta de modelos."""
-    # Candidatos prioritários
-    priority_candidates = [
-        os.path.join(search_dir, "checkpoints", "mappo_latest.pt"),
-        os.path.join(search_dir, "mappo_best.pt"),
-        os.path.join(search_dir, "cooperation_attacker", "mappo_best.pt"),
-        os.path.join(search_dir, "cooperation_attacker", "mappo_latest.pt"),
-        os.path.join(search_dir, "mappo_latest.pt"),
-        os.path.join(search_dir, "cooperation_attacker", "mappo_final.pt"),
-        os.path.join(search_dir, "mappo_final.pt"),
-    ]
+    latest_ckpt = os.path.join(search_dir, "checkpoints", "mappo_latest.pt")
+    if os.path.exists(latest_ckpt):
+        return latest_ckpt
 
-
-    for cand in priority_candidates:
-        if os.path.exists(cand):
-            return cand
-
-    # Se não achar os nomes padrão, busca o arquivo .pt mais recente por data de modificação
     all_pts = glob.glob(os.path.join(search_dir, "**", "*.pt"), recursive=True)
     if all_pts:
         latest_file = max(all_pts, key=os.path.getmtime)

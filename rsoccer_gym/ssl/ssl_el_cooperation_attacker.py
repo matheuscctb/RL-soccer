@@ -130,6 +130,8 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.pass_in_progress = False
         self.last_touch_agent = None
         self.pass_start_step = 0
+        self.pass_sender = None
+        self.pass_origin_pos = None
         self.shot_opp_active = False
         self.shot_own_active = False
         self.reward_shaping_total = None
@@ -142,6 +144,8 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.pass_in_progress = False
         self.last_touch_agent = None
         self.pass_start_step = 0
+        self.pass_sender = None
+        self.pass_origin_pos = None
         self.shot_opp_active = False
         self.shot_own_active = False
         self.reward_shaping_total = None
@@ -186,10 +190,10 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
 
         term_dict = {agent: terminated for agent in self.agents}
         trunc_dict = {agent: truncated for agent in self.agents}
+        done = terminated or truncated
         info_dict = {
             agent: {
-                "reward_shaping": self.reward_shaping_total,
-                "global_state": self.get_global_state(),
+                "reward_shaping": self.reward_shaping_total if done else None,
             }
             for agent in self.agents
         }
@@ -406,7 +410,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         return in_x and in_y
 
     def _update_pass_tracker(self, actions_dict: Dict[str, np.ndarray]):
-        """Rastreia dinâmica de passes entre os dois robôs atacantes azuis."""
+        """Rastreia dinâmica de passes entre os dois robôs atacantes azuis (anti-farming com distância mínima)."""
         ball = self.frame.ball
         r0 = self.frame.robots_blue[0]
         r1 = self.frame.robots_blue[1]
@@ -414,36 +418,43 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         d0 = float(np.linalg.norm([r0.x - ball.x, r0.y - ball.y]))
         d1 = float(np.linalg.norm([r1.x - ball.x, r1.y - ball.y]))
 
-        # Identificar toques
-        if d0 < 0.15 or r0.infrared:
+        # Identificar posse/toque recente
+        if d0 < 0.14 or r0.infrared:
             self.last_touch_agent = "blue_0"
-        elif d1 < 0.15 or r1.infrared:
+        elif d1 < 0.14 or r1.infrared:
             self.last_touch_agent = "blue_1"
 
-        # Detectar início de passe (chute de um robô em direção ao outro)
+        # Detectar início de passe genuíno (bola lançada em direção ao parceiro com distância mínima de 70cm)
         ball_speed = float(np.linalg.norm([ball.v_x, ball.v_y]))
-        if ball_speed > 0.8:
+        if ball_speed > 0.8 and not self.pass_in_progress:
             if self.last_touch_agent == "blue_0":
                 vec_b_to_r1 = np.array([r1.x - ball.x, r1.y - ball.y])
-                dist_r1 = np.linalg.norm(vec_b_to_r1)
-                if dist_r1 > 0.3:
+                dist_r1 = float(np.linalg.norm(vec_b_to_r1))
+                if dist_r1 >= 0.70:
                     dir_r1 = vec_b_to_r1 / dist_r1
                     ball_dir = np.array([ball.v_x, ball.v_y]) / ball_speed
-                    if np.dot(ball_dir, dir_r1) > 0.70:
+                    if np.dot(ball_dir, dir_r1) > 0.75:
                         self.pass_in_progress = True
                         self.pass_start_step = self.steps
+                        self.pass_sender = "blue_0"
+                        self.pass_origin_pos = np.array([ball.x, ball.y])
             elif self.last_touch_agent == "blue_1":
                 vec_b_to_r0 = np.array([r0.x - ball.x, r0.y - ball.y])
-                dist_r0 = np.linalg.norm(vec_b_to_r0)
-                if dist_r0 > 0.3:
+                dist_r0 = float(np.linalg.norm(vec_b_to_r0))
+                if dist_r0 >= 0.70:
                     dir_r0 = vec_b_to_r0 / dist_r0
                     ball_dir = np.array([ball.v_x, ball.v_y]) / ball_speed
-                    if np.dot(ball_dir, dir_r0) > 0.70:
+                    if np.dot(ball_dir, dir_r0) > 0.75:
                         self.pass_in_progress = True
                         self.pass_start_step = self.steps
+                        self.pass_sender = "blue_1"
+                        self.pass_origin_pos = np.array([ball.x, ball.y])
 
-        if self.pass_in_progress and (self.steps - self.pass_start_step > 50 or ball_speed < 0.2):
+        # Timeout ou desaceleração do passe
+        if self.pass_in_progress and (self.steps - self.pass_start_step > 60 or ball_speed < 0.25):
             self.pass_in_progress = False
+            self.pass_sender = None
+            self.pass_origin_pos = None
 
     def _get_agent_observation(self, agent_id: str) -> np.ndarray:
         """Gera o vetor de observação local descentralizado para o agente especificado."""
@@ -473,13 +484,14 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         rel_by = ball.y - me.y
         dist_b = float(np.linalg.norm([rel_bx, rel_by]))
         ang_b = float(math.atan2(rel_by, rel_bx) - np.deg2rad(me.theta))
+        ang_b_norm = (ang_b + math.pi) % (2 * math.pi) - math.pi
         obs.extend([
             self.norm_pos(rel_bx),
             self.norm_pos(rel_by),
             self.norm_v(ball.v_x),
             self.norm_v(ball.v_y),
             self.norm_pos(dist_b),
-            float(math.cos(ang_b)),
+            float(ang_b_norm / math.pi),
         ])
 
         # 3. Companheiro parceiro ativo (8)
@@ -538,19 +550,19 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
 
     def _calculate_multi_agent_reward_and_done(self) -> Tuple[Dict[str, float], bool, bool]:
         """
-        FUNÇÃO DE RECOMPENSA COOPERATIVA COMPLETA, PROPORCIONAL E BLINDADA:
-        - Gol Marcado: +40.0 a +50.0 compartilhado (bônus para chute veloz).
-        - Passe Conectado: +15.0 compartilhado (robô chuta para o parceiro e este domina).
-        - Aproximação e Contorno (PBRS): até +-1.0 (alvo a 9.5cm atrás da bola ou contorno lateral).
-        - Avanço da Bola ao Gol (PBRS): até +-2.0.
-        - Alinhamento Diferencial: até +-0.5 orientado para o gol.
-        - Disparo do Chute por Aceleração/Impacto Real: +2.0 a +4.0.
-        - Sensor Infravermelho Frontal: +0.05 contínuo por ter a bola no chutador.
-        - Desmarcação do 2º Atacante: incentiva infiltração em linha de passe aberta.
-        - Barreira Repulsiva da Área Adversária a 20cm da linha.
-        - Anti-Colisão entre Companheiros: -0.5 para não disputarem a bola.
-        - Penalidades: Invasão de Área (-5.0), Gol Contra (-15.0), Bola Fora (-2.0), Fora de Campo (-5.0).
-        - Custo de Tempo e Energia: -0.005 por passo.
+        FUNÇÃO DE RECOMPENSA COOPERATIVA ROBUSTA, ANTI-FARMING E BASEADA EM POTENCIAL (PBRS):
+        - Gol Marcado: +50.0 compartilhado (objetivo primário).
+        - Passe Genuíno Conectado (distância >= 60cm): +12.0 compartilhado.
+        - Avanço da Bola ao Gol (PBRS telescópico): até +-1.0 compartilhado.
+        - Posicionamento e Contorno da Bola (PBRS sem saltos): até +-0.5 por robô.
+        - Infiltração Tática do 2º Atacante (Target Contínuo sem flips): até +-0.3.
+        - Alinhamento Diferencial com o Gol: até +-0.2 orientado para o gol.
+        - Impacto e Transferência de Momento no Chute: +1.5 a +3.0 na aceleração ao gol.
+        - Finalização Veloz no Alvo: +3.0 evento único por tiro direto.
+        - Controle no Sensor Infravermelho: +0.03 contínuo com bola no chutador.
+        - Anti-Colisão Suave entre Companheiros: penalidade progressiva quando dist < 22cm.
+        - Penalidades: Invasão de Área (-3.0), Gol Sofrido (-20.0), Bola Fora (-2.0), Fora de Campo (-5.0).
+        - Custo de Tempo e Energia: -0.003 por passo.
         """
         done = False
         if self.reward_shaping_total is None:
@@ -587,26 +599,24 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         # ----------------------------------------------------
         # 1. Eventos Terminais Globais (Gols e Saídas)
         # ----------------------------------------------------
-        # Gol Marcado Válido (+40.0 a +50.0 compartilhado)
+        # Gol Marcado Válido (+50.0 Compartilhado)
         if ball.x > half_len and abs(ball.y) < goal_w:
-            goal_rw = 40.0
-            if self.shot_opp_active or ball.v_x > 0.8:
-                goal_rw += 10.0  # Total 50.0 por gol de chute potente
+            goal_rw = 50.0
             shared_reward += goal_rw
             done = True
             self.reward_shaping_total["goal"] += goal_rw
             reward_dict = {a: shared_reward for a in self.agents}
             return reward_dict, done, False
 
-        # Gol Sofrido / Gol Contra (-15.0 compartilhado)
+        # Gol Sofrido / Gol Contra (-20.0 compartilhado)
         if ball.x < -half_len and abs(ball.y) < goal_w:
-            shared_reward -= 15.0
+            shared_reward -= 20.0
             done = True
-            self.reward_shaping_total["goal"] -= 15.0
+            self.reward_shaping_total["goal"] -= 20.0
             reward_dict = {a: shared_reward for a in self.agents}
             return reward_dict, done, False
 
-        # Bola fora pela Linha de Fundo Adversária (+0.5 conclusão de ataque)
+        # Conclusão de ataque pela Linha de Fundo Adversária (+0.5)
         if ball.x > half_len and abs(ball.y) >= goal_w:
             shared_reward += 0.5
             done = True
@@ -614,7 +624,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             return reward_dict, done, False
 
         # Bola fora das laterais ou defesa (-2.0)
-        if abs(ball.x) > (half_len + 0.1) or abs(ball.y) > (half_wid + 0.1):
+        if abs(ball.x) > (half_len + 0.10) or abs(ball.y) > (half_wid + 0.10):
             shared_reward -= 2.0
             done = True
             self.reward_shaping_total["ball_out"] -= 2.0
@@ -636,192 +646,169 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             # Invasão de área de pênalti
             if self._is_inside_penalty_area(robot.x, robot.y, is_yellow_area=True) or \
                self._is_inside_penalty_area(robot.x, robot.y, is_yellow_area=False):
-                shared_reward -= 5.0
+                area_pen = -3.0
+                shared_reward += area_pen
                 done = True
-                self.reward_shaping_total["area_violation"] -= 5.0
+                self.reward_shaping_total["area_violation"] += area_pen
                 reward_dict = {a: shared_reward for a in self.agents}
                 return reward_dict, done, False
 
         # ----------------------------------------------------
-        # 3. Penalidade de Colisão entre Companheiros de Equipe
+        # 3. Penalidade de Anti-Colisão Suave entre Companheiros
         # ----------------------------------------------------
         dist_teammates = float(np.linalg.norm([r0.x - r1.x, r0.y - r1.y]))
-        if dist_teammates < 0.20:
-            col_pen = -0.5
+        if dist_teammates < 0.22:
+            col_pen = -0.5 * ((0.22 - dist_teammates) / 0.22)
             shared_reward += col_pen
             self.reward_shaping_total["collision_teammates"] += col_pen
 
         # ----------------------------------------------------
-        # 4. Detecção e Recompensa de PASSE BEM-SUCEDIDO (+15.0 Compartilhado!)
+        # 4. Detecção de Passe Conectado (+12.0 Compartilhado - Anti-Farming)
         # ----------------------------------------------------
-        if self.pass_in_progress:
-            if self.last_touch_agent == "blue_0" and (r1.infrared or float(np.linalg.norm([r1.x - ball.x, r1.y - ball.y])) < 0.15):
-                pass_rw = 15.0
-                shared_reward += pass_rw
+        if self.pass_in_progress and self.pass_origin_pos is not None:
+            receiver = r1 if self.pass_sender == "blue_0" else r0
+            d_recv = float(np.linalg.norm([receiver.x - ball.x, receiver.y - ball.y]))
+            if receiver.infrared or d_recv < 0.14:
+                pass_travel_dist = float(np.linalg.norm([ball.x - self.pass_origin_pos[0], ball.y - self.pass_origin_pos[1]]))
+                if pass_travel_dist >= 0.60:
+                    pass_rw = 12.0
+                    shared_reward += pass_rw
+                    self.reward_shaping_total["pass_success"] += pass_rw
                 self.pass_in_progress = False
-                self.reward_shaping_total["pass_success"] += pass_rw
-            elif self.last_touch_agent == "blue_1" and (r0.infrared or float(np.linalg.norm([r0.x - ball.x, r0.y - ball.y])) < 0.15):
-                pass_rw = 15.0
-                shared_reward += pass_rw
-                self.pass_in_progress = False
-                self.reward_shaping_total["pass_success"] += pass_rw
+                self.pass_sender = None
+                self.pass_origin_pos = None
 
         # ----------------------------------------------------
-        # 5. Geometria de Posicionamento e Contorno da Bola
+        # 5. Geometria Dinâmica dos Agentes e Alvos
         # ----------------------------------------------------
         goal_target = np.array([half_len, 0.0])
         ball_pos = np.array([ball.x, ball.y])
         dist_b2g = float(np.linalg.norm(goal_target - ball_pos))
         dir_b2g = (goal_target - ball_pos) / max(dist_b2g, 1e-6)
-        perp_dir = np.array([-dir_b2g[1], dir_b2g[0]])
 
         dist_r0_b = float(np.linalg.norm([r0.x - ball.x, r0.y - ball.y]))
         dist_r1_b = float(np.linalg.norm([r1.x - ball.x, r1.y - ball.y]))
 
-        # Identificar líder (mais perto da bola) e receptor
+        # Alvo do condutor (10cm atrás da bola apontando para o gol)
+        target_conductor = ball_pos - 0.10 * dir_b2g
+
+        # Alvo suave e contínuo do 2º atacante (sem flips descontínuos)
+        wing_target_x = float(np.clip(ball.x + 0.60, -0.2, half_len - 0.70))
+        wing_target_y = float(-0.70 * np.tanh(2.0 * ball.y))
+        target_wing = np.array([wing_target_x, wing_target_y])
+
+        # Designar alvos para cada robô de forma estável
         if dist_r0_b <= dist_r1_b:
-            lead_robot = r0
-            wing_robot = r1
-            lead_agent = "blue_0"
-            lead_idx = 0
-            wing_idx = 1
+            target_0 = target_conductor
+            target_1 = target_wing
+            is_r0_lead = True
         else:
-            lead_robot = r1
-            wing_robot = r0
-            lead_agent = "blue_1"
-            lead_idx = 1
-            wing_idx = 0
+            target_0 = target_wing
+            target_1 = target_conductor
+            is_r0_lead = False
 
-        lead_pos = np.array([lead_robot.x, lead_robot.y])
-        vec_r2b = ball_pos - lead_pos
-        dist_r2b = float(np.linalg.norm(vec_r2b))
-        proj_behind = float(np.dot(vec_r2b, dir_b2g))
+        cur_dist_target_0 = float(np.linalg.norm(target_0 - np.array([r0.x, r0.y])))
+        cur_dist_target_1 = float(np.linalg.norm(target_1 - np.array([r1.x, r1.y])))
 
-        # Alvo do condutor: 9.5cm atrás da bola apontando para o gol ou contorno lateral (15cm)
-        if proj_behind < -0.05 and dist_r2b < 0.30:
-            y_rel = float(np.dot(lead_pos - ball_pos, perp_dir))
-            sign_y = 1.0 if y_rel >= 0 else -1.0
-            target_pos = ball_pos - 0.12 * dir_b2g + sign_y * 0.15 * perp_dir
-        else:
-            target_pos = ball_pos - 0.095 * dir_b2g
-        cur_dist_target = float(np.linalg.norm(target_pos - lead_pos))
-
-        # Orientação angular do condutor em relação ao gol
-        target_angle = math.atan2(dir_b2g[1], dir_b2g[0])
-        lead_theta_rad = math.radians(lead_robot.theta)
-        align_cos = math.cos(lead_theta_rad - target_angle)
-
-        # Velocidade da bola ao gol
+        # ----------------------------------------------------
+        # 6. Finalização em Alta Velocidade no Alvo (+3.0 Evento)
+        # ----------------------------------------------------
         ball_vel = np.array([ball.v_x, ball.v_y])
         ball_v_to_goal = float(np.dot(ball_vel, dir_b2g))
-
-        # ----------------------------------------------------
-        # 6. Tiro em Alta Velocidade no Alvo (+6.0 Evento)
-        # ----------------------------------------------------
-        if ball.v_x > 0.8 and ball_v_to_goal > 0.5:
+        if ball.v_x > 1.0 and ball_v_to_goal > 0.8:
             t_opp = (half_len - ball.x) / max(ball.v_x, 1e-6)
-            if 0 < t_opp < 2.0:
+            if 0 < t_opp < 1.8:
                 y_proj = ball.y + (ball.v_y * t_opp)
-                if abs(y_proj) <= (goal_w + 0.12) and not self.shot_opp_active:
+                if abs(y_proj) <= (goal_w + 0.10) and not self.shot_opp_active:
                     self.shot_opp_active = True
-                    shot_bonus = 6.0
+                    shot_bonus = 3.0
                     shared_reward += shot_bonus
                     self.reward_shaping_total["shot_on_goal"] += shot_bonus
-        elif ball.v_x < 0.3:
+        elif ball.v_x < 0.4:
             self.shot_opp_active = False
 
         # ----------------------------------------------------
-        # 7. Potenciais Diferenciais PBRS (Avanço, Aproximação, Alinhamento, Impacto)
+        # 7. Potenciais PBRS Limpos (Avanço da Bola, Movimentação e Alinhamento)
         # ----------------------------------------------------
         if self.last_frame is not None:
             last_ball = self.last_frame.ball
             last_ball_pos = np.array([last_ball.x, last_ball.y])
             last_dist_b2g = float(np.linalg.norm(goal_target - last_ball_pos))
             last_dir_b2g = (goal_target - last_ball_pos) / max(last_dist_b2g, 1e-6)
-            last_perp_dir = np.array([-last_dir_b2g[1], last_dir_b2g[0]])
 
-            last_lead_rbt = self.last_frame.robots_blue[lead_idx]
-            last_lead_pos = np.array([last_lead_rbt.x, last_lead_rbt.y])
-            last_vec_r2b = last_ball_pos - last_lead_pos
-            last_dist_r2b = float(np.linalg.norm(last_vec_r2b))
-            last_proj_behind = float(np.dot(last_vec_r2b, last_dir_b2g))
+            last_r0 = self.last_frame.robots_blue[0]
+            last_r1 = self.last_frame.robots_blue[1]
 
-            if last_proj_behind < -0.05 and last_dist_r2b < 0.30:
-                last_y_rel = float(np.dot(last_lead_pos - last_ball_pos, last_perp_dir))
-                last_sign_y = 1.0 if last_y_rel >= 0 else -1.0
-                last_target_pos = last_ball_pos - 0.12 * last_dir_b2g + last_sign_y * 0.15 * last_perp_dir
-            else:
-                last_target_pos = last_ball_pos - 0.095 * last_dir_b2g
-            last_dist_target = float(np.linalg.norm(last_target_pos - last_lead_pos))
+            last_target_cond = last_ball_pos - 0.10 * last_dir_b2g
+            last_wing_x = float(np.clip(last_ball.x + 0.60, -0.2, half_len - 0.70))
+            last_wing_y = float(-0.70 * np.tanh(2.0 * last_ball.y))
+            last_target_w = np.array([last_wing_x, last_wing_y])
 
-            # A) Aproximação e Contorno (até +-1.0)
-            diff_move = (last_dist_target - cur_dist_target) * 2.5
-            if proj_behind > 0.0 and dist_r2b < 0.25 and align_cos > 0.1:
-                diff_contact = (last_dist_r2b - dist_r2b) * 3.0
-                if diff_contact > 0:
-                    diff_move = max(diff_move, diff_contact)
-            r_move = float(np.clip(diff_move, -1.0, 1.0))
-            if ball_v_to_goal > 0.6:
-                r_move = max(0.0, r_move)
+            last_target_0 = last_target_cond if is_r0_lead else last_target_w
+            last_target_1 = last_target_w if is_r0_lead else last_target_cond
 
-            if lead_agent == "blue_0":
-                r0_reward += r_move
-            else:
-                r1_reward += r_move
-            self.reward_shaping_total["move_to_ball"] += r_move
+            last_dist_target_0 = float(np.linalg.norm(last_target_0 - np.array([last_r0.x, last_r0.y])))
+            last_dist_target_1 = float(np.linalg.norm(last_target_1 - np.array([last_r1.x, last_r1.y])))
 
-            # B) Avanço da Bola ao Gol (até +-2.0 Compartilhado)
-            diff_ball_goal = (last_dist_b2g - dist_b2g) * 4.0
-            r_ball_grad = float(np.clip(diff_ball_goal, -2.0, 2.0))
+            # A) Avanço da Bola em Direção ao Gol (PBRS Telescópico Compartilhado)
+            diff_ball_goal = (last_dist_b2g - dist_b2g) * 3.0
+            r_ball_grad = float(np.clip(diff_ball_goal, -1.0, 1.0))
             shared_reward += r_ball_grad
             self.reward_shaping_total["ball_grad"] += r_ball_grad
 
-            # C) Alinhamento Diferencial com o Gol (até +-0.5)
-            last_target_angle = math.atan2(last_dir_b2g[1], last_dir_b2g[0])
-            last_align_cos = math.cos(math.radians(last_lead_rbt.theta) - last_target_angle)
-            diff_align = (align_cos - last_align_cos) * 0.5
-            r_align = float(np.clip(diff_align, -0.5, 0.5))
-            if lead_agent == "blue_0":
-                r0_reward += r_align
-            else:
-                r1_reward += r_align
-            self.reward_shaping_total["alignment"] += r_align
+            # B) Posicionamento e Aproximação dos Agentes
+            diff_move_0 = (last_dist_target_0 - cur_dist_target_0) * 2.0
+            diff_move_1 = (last_dist_target_1 - cur_dist_target_1) * 2.0
+            r_move_0 = float(np.clip(diff_move_0, -0.5, 0.5))
+            r_move_1 = float(np.clip(diff_move_1, -0.5, 0.5))
 
-            # D) Disparo do Chute com Transferência Real de Momento (+2.0 a +4.0)
+            r0_reward += r_move_0
+            r1_reward += r_move_1
+            if is_r0_lead:
+                self.reward_shaping_total["move_to_ball"] += r_move_0
+                self.reward_shaping_total["receiver_positioning"] += r_move_1
+            else:
+                self.reward_shaping_total["move_to_ball"] += r_move_1
+                self.reward_shaping_total["receiver_positioning"] += r_move_0
+
+            # C) Alinhamento Diferencial com o Gol (Condutor próximo da bola)
+            lead_rbt = r0 if is_r0_lead else r1
+            last_lead_rbt = last_r0 if is_r0_lead else last_r1
+            dist_lead_b = dist_r0_b if is_r0_lead else dist_r1_b
+
+            if dist_lead_b < 0.35:
+                target_ang = math.atan2(dir_b2g[1], dir_b2g[0])
+                cur_align_cos = math.cos(math.radians(lead_rbt.theta) - target_ang)
+                last_target_ang = math.atan2(last_dir_b2g[1], last_dir_b2g[0])
+                last_align_cos = math.cos(math.radians(last_lead_rbt.theta) - last_target_ang)
+
+                diff_align = (cur_align_cos - last_align_cos) * 0.4
+                r_align = float(np.clip(diff_align, -0.2, 0.2))
+                if is_r0_lead:
+                    r0_reward += r_align
+                else:
+                    r1_reward += r_align
+                self.reward_shaping_total["alignment"] += r_align
+
+            # D) Disparo do Chute por Aceleração Real em Direção ao Gol
             last_ball_vel = np.array([last_ball.v_x, last_ball.v_y])
             last_ball_v_to_goal = float(np.dot(last_ball_vel, last_dir_b2g))
             accel_ball_to_goal = ball_v_to_goal - last_ball_v_to_goal
-            if accel_ball_to_goal > 0.3 and (dist_r2b < 0.25 or lead_robot.infrared):
-                impulse_rw = float(2.0 * min(accel_ball_to_goal, 2.0))
+            if accel_ball_to_goal > 0.35 and (dist_lead_b < 0.22 or lead_rbt.infrared):
+                impulse_rw = float(1.5 * min(accel_ball_to_goal, 2.0))
+                lead_idx = 0 if is_r0_lead else 1
                 if self.sent_commands is not None and self.sent_commands[lead_idx].kick_v_x > 0:
-                    impulse_rw += 2.0
-                    self.reward_shaping_total["kick_action"] += 2.0
+                    impulse_rw += 1.0
+                    self.reward_shaping_total["kick_action"] += 1.0
                 shared_reward += impulse_rw
                 self.reward_shaping_total["push_to_goal"] += impulse_rw
 
-            # E) Desmarcação do 2º Atacante (Infiltração Ofensiva)
-            wing_target_x = np.clip(ball.x + 0.8, -0.5, half_len - 0.6)
-            wing_target_y = -0.7 if ball.y >= 0 else 0.7
-            wing_target_pos = np.array([wing_target_x, wing_target_y])
-            cur_wing_dist = float(np.linalg.norm([wing_robot.x - wing_target_pos[0], wing_robot.y - wing_target_pos[1]]))
-
-            last_wing_rbt = self.last_frame.robots_blue[wing_idx]
-            last_wing_dist = float(np.linalg.norm([last_wing_rbt.x - wing_target_pos[0], last_wing_rbt.y - wing_target_pos[1]]))
-            diff_wing = (last_wing_dist - cur_wing_dist) * 1.5
-            r_wing_pos = float(np.clip(diff_wing, -0.5, 0.5))
-
-            if lead_agent == "blue_0":
-                r1_reward += r_wing_pos
-            else:
-                r0_reward += r_wing_pos
-            self.reward_shaping_total["receiver_positioning"] += r_wing_pos
-
         # ----------------------------------------------------
-        # 8. Sensor Infravermelho Frontal (+0.05 contínuo)
+        # 8. Sensor Infravermelho Frontal (+0.03 contínuo por controle da bola)
         # ----------------------------------------------------
-        for i, (agent_name, robot) in enumerate([("blue_0", r0), ("blue_1", r1)]):
+        for agent_name, robot in [("blue_0", r0), ("blue_1", r1)]:
             if robot.infrared:
-                infra_rw = 0.05
+                infra_rw = 0.03
                 if agent_name == "blue_0":
                     r0_reward += infra_rw
                 else:
@@ -829,23 +816,21 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
                 self.reward_shaping_total["infrared"] += infra_rw
 
         # ----------------------------------------------------
-        # 9. Barreira Repulsiva da Área Adversária (a 20cm da linha)
+        # 9. Barreira Repulsiva da Área Adversária (Buffer de 15cm)
         # ----------------------------------------------------
         penalty_line_x = half_len - self.field.penalty_length  # 1.75m
         for rbt in [r0, r1]:
-            if rbt.x > (penalty_line_x - 0.20) and abs(rbt.y) < (self.field.penalty_width / 2 + 0.10):
-                dist_near = rbt.x - (penalty_line_x - 0.20)
+            if rbt.x > (penalty_line_x - 0.15) and abs(rbt.y) < (self.field.penalty_width / 2 + 0.08):
+                dist_near = rbt.x - (penalty_line_x - 0.15)
                 shared_reward -= 0.20 * dist_near
 
         # ----------------------------------------------------
-        # 10. Penalidade Suave de Tempo e Energia (-0.005 por passo)
+        # 10. Custo Suave de Tempo e Energia (-0.003 por passo)
         # ----------------------------------------------------
-        time_pen = -0.005
-        energy_0 = float(1e-5 * (abs(r0.v_x) + abs(r0.v_y) + abs(r0.v_theta)))
-        energy_1 = float(1e-5 * (abs(r1.v_x) + abs(r1.v_y) + abs(r1.v_theta)))
-        r0_reward += time_pen - energy_0
-        r1_reward += time_pen - energy_1
-        self.reward_shaping_total["energy"] -= (abs(time_pen) + energy_0 + energy_1)
+        time_pen = -0.003
+        r0_reward += time_pen
+        r1_reward += time_pen
+        self.reward_shaping_total["energy"] += (2 * time_pen)
 
         # Recompensa total
         reward_dict = {

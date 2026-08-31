@@ -30,7 +30,7 @@ class MAPPOTrainer:
         lr_critic: float = 1e-3,
         clip_param: float = 0.2,
         value_loss_coef: float = 0.5,
-        entropy_coef: float = 0.01,
+        entropy_coef: float = 0.001,
         max_grad_norm: float = 0.5,
         ppo_epochs: int = 5,
         batch_size: int = 128,

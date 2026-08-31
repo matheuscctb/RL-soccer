@@ -14,19 +14,9 @@ from mappo import MAPPOTrainer
 
 def get_latest_checkpoint_info(search_dir: str = "modelos") -> Tuple[Optional[str], float]:
     """Retorna o caminho e o timestamp de modificação do checkpoint mais recente."""
-    priority_candidates = [
-        os.path.join(search_dir, "checkpoints", "mappo_latest.pt"),
-        os.path.join(search_dir, "mappo_best.pt"),
-        os.path.join(search_dir, "cooperation_attacker", "mappo_best.pt"),
-        os.path.join(search_dir, "cooperation_attacker", "mappo_latest.pt"),
-        os.path.join(search_dir, "mappo_latest.pt"),
-        os.path.join(search_dir, "cooperation_attacker", "mappo_final.pt"),
-        os.path.join(search_dir, "mappo_final.pt"),
-    ]
-
-    for cand in priority_candidates:
-        if os.path.exists(cand):
-            return cand, os.path.getmtime(cand)
+    latest_ckpt = os.path.join(search_dir, "checkpoints", "mappo_latest.pt")
+    if os.path.exists(latest_ckpt):
+        return latest_ckpt, os.path.getmtime(latest_ckpt)
 
     all_pts = glob.glob(os.path.join(search_dir, "**", "*.pt"), recursive=True)
     if all_pts:
@@ -40,7 +30,7 @@ def extract_step_count(filepath: str, ckpt_dict: dict = None) -> Optional[int]:
     """Extrai a contagem de passos do checkpoint."""
     if ckpt_dict and "total_steps" in ckpt_dict:
         return ckpt_dict["total_steps"]
-    match = re.search(r"mappo_step_(\d+)\.pt", filepath)
+    match = re.search(r"mappo_(?:step|best_step|final_step)_(\d+)\.pt", filepath)
     if match:
         return int(match.group(1))
     return None
