@@ -4,6 +4,10 @@ Ambiente de **Aprendizado por Reforço Multiagente (MARL)** baseado no algoritmo
 
 Dois robôs atacantes azuis aprendem a cooperar dinamicamente (trocar passes rápidos, desmarcar, avançar com a bola e finalizar a gol) contra um goleiro e defensores amarelos, respeitando todas as regras oficiais de campo da SSL Entry Level.
 
+> 🛡️ **Branch Ativa: `feat/parede-virtual-areas`**  
+> Para a documentação técnica completa das modificações recentes (Parede Virtual Cinemática, Atribuição Dinâmica de Papéis com Histerese, Spawn Alternado e Correções no Box2D), consulte:  
+> 📄 **[`README_FEAT_PAREDE_VIRTUAL_AREAS.md`](README_FEAT_PAREDE_VIRTUAL_AREAS.md)**
+
 ---
 
 ## 📋 Índice
