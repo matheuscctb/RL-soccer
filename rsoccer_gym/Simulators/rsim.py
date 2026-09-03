@@ -61,13 +61,15 @@ class RSim:
         replacement_pos["ball_pos"] = np.array(ball_pos)
 
         blue_pos: List[List[float]] = []
-        for robot in frame.robots_blue.values():
+        for i in range(len(frame.robots_blue)):
+            robot = frame.robots_blue[i]
             robot_pos: List[float] = [robot.x, robot.y, robot.theta]
             blue_pos.append(robot_pos)
         replacement_pos["blue_robots_pos"] = np.array(blue_pos)
 
         yellow_pos: List[List[float]] = []
-        for robot in frame.robots_yellow.values():
+        for i in range(len(frame.robots_yellow)):
+            robot = frame.robots_yellow[i]
             robot_pos: List[float] = [robot.x, robot.y, robot.theta]
             yellow_pos.append(robot_pos)
         replacement_pos["yellow_robots_pos"] = np.array(yellow_pos)

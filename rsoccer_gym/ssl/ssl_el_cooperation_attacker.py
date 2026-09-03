@@ -134,8 +134,18 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.pass_sender = None
         self.pass_origin_pos = None
         self.shot_opp_active = False
-        self.shot_own_active = False
-        self.reward_shaping_total = None
+        # ---------------------------------------------------------------
+        # Controle de Papel Dinâmico (Condutor / Ala) por Função de Custo
+        # ---------------------------------------------------------------
+        self.current_lead = None
+        self.ROLE_W_DIST = 1.0                  # w1: peso da distância até a bola (r_i)
+        self.ROLE_W_ANGLE = 0.4                 # w2: peso do desalinhamento angular (1 - cos theta_i)
+        self.ROLE_HYSTERESIS_DISCOUNT = 0.85    # fator (<1) que "desconta" o custo do líder atual
+
+        # Margens das barreiras suaves de contenção (individuais, não terminam o episódio)
+        self.BOUNDARY_WARN_MARGIN = 0.15           # (m) zona de alerta antes da borda rígida do campo
+        self.AREA_WARN_MARGIN = 0.15               # (m) zona de alerta antes das áreas de pênalti
+        self.BOUNDARY_CHASE_SUPPRESS_RADIUS = 0.50 # (m) raio de supressão da borda quando persegue a bola
 
     def reset(self, *, seed=None, options=None):
         if seed is not None:
@@ -152,6 +162,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.shot_opp_active = False
         self.shot_own_active = False
         self.reward_shaping_total = None
+        self.current_lead = None  # papel será recalculado no primeiro passo do episódio
 
         initial_pos_frame: Frame = self._get_initial_positions_frame()
         self.rsim.reset(initial_pos_frame)
@@ -276,26 +287,33 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         ball_y = random.uniform(-half_wid * 0.6, half_wid * 0.6)
         frame.ball = Ball(x=ball_x, y=ball_y)
 
-        # Robô Azul 0 (Passador / Atacante 1) posicionado atrás da bola
-        b0_x = ball_x - random.uniform(0.20, 0.40)
-        b0_y = ball_y + random.uniform(-0.15, 0.15)
-        angle_b0 = np.rad2deg(math.atan2(ball_y - b0_y, ball_x - b0_x))
-        frame.robots_blue[0] = Robot(
-            x=np.clip(b0_x, -half_len, half_len),
-            y=np.clip(b0_y, -half_wid, half_wid),
-            theta=angle_b0,
+        # Sorteio de qual robô nasce como Condutor (perto da bola) e qual nasce como Ala.
+        conductor_id = random.choice([0, 1])
+        wing_id = 1 - conductor_id
+
+        # Robô Condutor (posicionado atrás da bola, apontando para ela)
+        cond_x = ball_x - random.uniform(0.20, 0.40)
+        cond_y = ball_y + random.uniform(-0.15, 0.15)
+        angle_cond = np.rad2deg(math.atan2(ball_y - cond_y, ball_x - cond_x))
+        conductor_robot = Robot(
+            x=np.clip(cond_x, -half_len, half_len),
+            y=np.clip(cond_y, -half_wid, half_wid),
+            theta=angle_cond,
         )
 
-        # Robô Azul 1 (Receptor / Atacante 2) posicionado no flanco ofensivo oposto
+        # Robô Ala (posicionado no flanco ofensivo oposto, apontando para o gol adversário)
         sign_y = -1.0 if ball_y >= 0 else 1.0
-        b1_x = random.uniform(0.0, 1.2)
-        b1_y = sign_y * random.uniform(0.4, half_wid * 0.85)
-        target_goal_angle = np.rad2deg(math.atan2(-b1_y, (self.field.length / 2) - b1_x))
-        frame.robots_blue[1] = Robot(
-            x=b1_x,
-            y=b1_y,
+        wing_x = random.uniform(0.0, 1.2)
+        wing_y = sign_y * random.uniform(0.4, half_wid * 0.85)
+        target_goal_angle = np.rad2deg(math.atan2(-wing_y, (self.field.length / 2) - wing_x))
+        wing_robot = Robot(
+            x=wing_x,
+            y=wing_y,
             theta=target_goal_angle,
         )
+
+        frame.robots_blue[conductor_id] = conductor_robot
+        frame.robots_blue[wing_id] = wing_robot
 
         # Robô Azul 2 (Apoio estático na defesa)
         frame.robots_blue[2] = Robot(x=-1.50, y=0.0, theta=0.0)
@@ -756,6 +774,62 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         """Retorna observações descentralizadas para todos os agentes."""
         return {agent: self._get_agent_observation(agent) for agent in self.agents}
 
+    def _role_cost(self, robot: Robot, ball: Ball) -> Tuple[float, float]:
+        """
+        Custo de um robô assumir o papel de Condutor:
+
+            C_i = w1 * r_i + w2 * (1 - cos(theta_i))
+
+        - r_i: distância euclidiana do robô até a bola.
+        - theta_i: ângulo entre a orientação atual do robô e a direção até a
+          bola (theta_i = 0 => robô já está de frente para a bola).
+
+        Custo menor indica candidato melhor (mais perto e mais alinhado).
+        Retorna (custo, r_i) — r_i é reaproveitado pelo restante do shaping.
+        """
+        vec_to_ball = np.array([ball.x - robot.x, ball.y - robot.y])
+        dist = float(np.linalg.norm(vec_to_ball))
+
+        if dist > 1e-6:
+            dir_to_ball = vec_to_ball / dist
+            heading = np.array([np.cos(np.deg2rad(robot.theta)), np.sin(np.deg2rad(robot.theta))])
+            cos_theta = float(np.clip(np.dot(heading, dir_to_ball), -1.0, 1.0))
+        else:
+            cos_theta = 1.0  # bola colada no robô: desalinhamento considerado nulo
+
+        cost = self.ROLE_W_DIST * dist + self.ROLE_W_ANGLE * (1.0 - cos_theta)
+        return cost, dist
+
+    def _resolve_lead_role(self, r0: Robot, r1: Robot, ball: Ball) -> Tuple[bool, float, float]:
+        """
+        Decide qual robô é o "Condutor" (perto e alinhado com a bola) neste
+        passo, usando a função de custo C_i = w1*r_i + w2*(1-cos theta_i) com
+        histerese multiplicativa para evitar oscilação rápida de papel: o
+        custo do líder atual é descontado (ROLE_HYSTERESIS_DISCOUNT < 1) antes
+        da comparação, então o outro robô só assume a liderança se seu custo
+        real for claramente menor — inclusive quando a bola rola para perto
+        dele, já que isso derruba r_i e portanto C_i rapidamente.
+
+        Retorna (is_r0_lead, dist_r0_b, dist_r1_b).
+        """
+        cost_0, dist_r0_b = self._role_cost(r0, ball)
+        cost_1, dist_r1_b = self._role_cost(r1, ball)
+
+        if self.current_lead is None:
+            self.current_lead = "blue_0" if cost_0 <= cost_1 else "blue_1"
+            return self.current_lead == "blue_0", dist_r0_b, dist_r1_b
+
+        if self.current_lead == "blue_0":
+            lead_cost, other_cost, other_agent = cost_0, cost_1, "blue_1"
+        else:
+            lead_cost, other_cost, other_agent = cost_1, cost_0, "blue_0"
+
+        discounted_lead_cost = lead_cost * self.ROLE_HYSTERESIS_DISCOUNT
+        if other_cost < discounted_lead_cost:
+            self.current_lead = other_agent
+
+        return self.current_lead == "blue_0", dist_r0_b, dist_r1_b
+
     def _calculate_multi_agent_reward_and_done(self) -> Tuple[Dict[str, float], bool, bool]:
         """
         FUNÇÃO DE RECOMPENSA COOPERATIVA ROBUSTA, ANTI-FARMING E BASEADA EM POTENCIAL (PBRS):
@@ -862,6 +936,51 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             return reward_dict, done, False
 
         # ----------------------------------------------------
+        # 2b. Barreiras Suaves Individuais de Contenção (não terminam o episódio)
+        # ----------------------------------------------------
+        # Dão um gradiente de correção ANTES do robô efetivamente sair de campo ou
+        # invadir uma área de pênalti, reduzindo a frequência dos términos rígidos.
+        # A penalidade é individual (só quem se aproxima da borda paga).
+        own_pen_line_x = -half_len + self.field.penalty_length      # -1.75m (área própria)
+        opp_pen_line_x = half_len - self.field.penalty_length       # +1.75m (área adversária)
+        half_pen_w_buf = (self.field.penalty_width / 2) + 0.08
+
+        for agent_name, rbt in [("blue_0", r0), ("blue_1", r1)]:
+            # Contenção de borda do campo (X e Y) com supressão gradual se perseguindo a bola (chase_factor)
+            over_x = max(0.0, abs(rbt.x) - (half_len - self.BOUNDARY_WARN_MARGIN))
+            over_y = max(0.0, abs(rbt.y) - (half_wid - self.BOUNDARY_WARN_MARGIN))
+            overshoot = over_x + over_y
+            if overshoot > 0.0:
+                dist_r_b = float(np.linalg.norm([rbt.x - ball.x, rbt.y - ball.y]))
+                chase_factor = float(np.clip(dist_r_b / self.BOUNDARY_CHASE_SUPPRESS_RADIUS, 0.0, 1.0))
+                boundary_pen = -0.6 * (overshoot / self.BOUNDARY_WARN_MARGIN) * chase_factor
+                if agent_name == "blue_0":
+                    r0_reward += boundary_pen
+                else:
+                    r1_reward += boundary_pen
+                self.reward_shaping_total["out_of_bounds"] += boundary_pen
+
+            # Contenção da área de pênalti adversária (sempre ativa - invasão de área nunca é permitida)
+            if rbt.x > (opp_pen_line_x - self.AREA_WARN_MARGIN) and abs(rbt.y) < half_pen_w_buf:
+                dist_near = rbt.x - (opp_pen_line_x - self.AREA_WARN_MARGIN)
+                area_soft_pen = -0.20 * dist_near
+                if agent_name == "blue_0":
+                    r0_reward += area_soft_pen
+                else:
+                    r1_reward += area_soft_pen
+                self.reward_shaping_total["area_violation"] += area_soft_pen
+
+            # Contenção da área de pênalti própria (simétrica)
+            if rbt.x < (own_pen_line_x + self.AREA_WARN_MARGIN) and abs(rbt.y) < half_pen_w_buf:
+                dist_near = (own_pen_line_x + self.AREA_WARN_MARGIN) - rbt.x
+                area_soft_pen = -0.20 * dist_near
+                if agent_name == "blue_0":
+                    r0_reward += area_soft_pen
+                else:
+                    r1_reward += area_soft_pen
+                self.reward_shaping_total["area_violation"] += area_soft_pen
+
+        # ----------------------------------------------------
         # 3. Penalidade de Anti-Colisão Suave entre Companheiros
         # ----------------------------------------------------
         dist_teammates = float(np.linalg.norm([r0.x - r1.x, r0.y - r1.y]))
@@ -887,15 +1006,12 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
                 self.pass_origin_pos = None
 
         # ----------------------------------------------------
-        # 5. Geometria Dinâmica dos Agentes e Alvos
+        # 5. Geometria Dinâmica dos Agentes e Alvos (Papel por Histerese)
         # ----------------------------------------------------
         goal_target = np.array([half_len, 0.0])
         ball_pos = np.array([ball.x, ball.y])
         dist_b2g = float(np.linalg.norm(goal_target - ball_pos))
         dir_b2g = (goal_target - ball_pos) / max(dist_b2g, 1e-6)
-
-        dist_r0_b = float(np.linalg.norm([r0.x - ball.x, r0.y - ball.y]))
-        dist_r1_b = float(np.linalg.norm([r1.x - ball.x, r1.y - ball.y]))
 
         # Alvo do condutor (10cm atrás da bola apontando para o gol)
         target_conductor = ball_pos - 0.10 * dir_b2g
@@ -905,15 +1021,12 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         wing_target_y = float(-0.70 * np.tanh(2.0 * ball.y))
         target_wing = np.array([wing_target_x, wing_target_y])
 
-        # Designar alvos para cada robô de forma estável
-        if dist_r0_b <= dist_r1_b:
-            target_0 = target_conductor
-            target_1 = target_wing
-            is_r0_lead = True
-        else:
-            target_0 = target_wing
-            target_1 = target_conductor
-            is_r0_lead = False
+        # Designar alvos para cada robô via função de custo com histerese (evita
+        # flip-flop e o bug de "esperar" o parceiro quando a bola já está perto
+        # do agente que era ala).
+        is_r0_lead, dist_r0_b, dist_r1_b = self._resolve_lead_role(r0, r1, ball)
+        target_0 = target_conductor if is_r0_lead else target_wing
+        target_1 = target_wing if is_r0_lead else target_conductor
 
         cur_dist_target_0 = float(np.linalg.norm(target_0 - np.array([r0.x, r0.y])))
         cur_dist_target_1 = float(np.linalg.norm(target_1 - np.array([r1.x, r1.y])))
@@ -1024,16 +1137,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
                 self.reward_shaping_total["infrared"] += infra_rw
 
         # ----------------------------------------------------
-        # 9. Barreira Repulsiva da Área Adversária (Buffer de 15cm)
-        # ----------------------------------------------------
-        penalty_line_x = half_len - self.field.penalty_length  # 1.75m
-        for rbt in [r0, r1]:
-            if rbt.x > (penalty_line_x - 0.15) and abs(rbt.y) < (self.field.penalty_width / 2 + 0.08):
-                dist_near = rbt.x - (penalty_line_x - 0.15)
-                shared_reward -= 0.20 * dist_near
-
-        # ----------------------------------------------------
-        # 10. Custo Suave de Tempo e Energia (-0.003 por passo)
+        # 9. Custo Suave de Tempo e Energia (-0.003 por passo)
         # ----------------------------------------------------
         time_pen = -0.003
         r0_reward += time_pen
