@@ -138,6 +138,8 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.reward_shaping_total = None
 
     def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            random.seed(seed)
         super().reset(seed=seed, options=options)
         self.steps = 0
         self.last_frame = None
@@ -308,11 +310,130 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
 
         return frame
 
-    def convert_actions(self, action, angle):
-        """Desnormaliza velocidades do referencial global para o referencial local do robô."""
+    def _apply_virtual_walls(self, robot_x: float, robot_y: float, v_x: float, v_y: float) -> Tuple[float, float]:
+        """
+        Parede Virtual Cinemática Rígida (Action Shielding):
+        Bloqueia à força física qualquer comando de velocidade que tente mover o robô
+        para dentro das áreas de pênalti (adversária e própria) ou para fora dos limites do campo.
+        Permite movimento tangencial livre (deslizamento ao longo da parede).
+        """
+        r_radius = getattr(self.field, "rbt_radius", 0.09)
+        half_len = self.field.length / 2.0           # 2.25m
+        half_wid = self.field.width / 2.0            # 1.50m
+        pen_len = self.field.penalty_length          # 0.50m
+        half_pen_w = self.field.penalty_width / 2.0  # 0.675m
+        d_brake = 0.50  # Zona de desaceleração progressiva (50 cm)
+
+        # -------------------------------------------------------------
+        # 1. Área de Pênalti Adversária (Amarela - Direita: x > 1.75m, |y| < 0.675m)
+        # Limite de parada seguro: x <= 1.63m (12 cm antes da linha de 1.75m)
+        # -------------------------------------------------------------
+        x_stop_yellow = half_len - pen_len - r_radius - 0.03  # ~1.63m
+        y_stop_yellow = half_pen_w + r_radius + 0.02          # ~0.785m
+
+        # Parede frontal da área amarela (quando o robô está de frente para a área)
+        if abs(robot_y) < y_stop_yellow:
+            if robot_x >= x_stop_yellow:
+                v_x = min(0.0, v_x)
+                v_x = -1.5 * min(1.0, (robot_x - x_stop_yellow + 0.01) / 0.03)
+            elif robot_x >= x_stop_yellow - d_brake and v_x > 0:
+                frac = max(0.0, (x_stop_yellow - robot_x) / d_brake)
+                v_x = min(v_x, self.max_v * (frac ** 1.5))
+
+        # Paredes laterais da área amarela (quando o robô está acima ou abaixo da área)
+        if robot_x >= x_stop_yellow:
+            # Flanco superior (y >= y_stop_yellow tentando descer)
+            if robot_y >= y_stop_yellow - 0.02 and v_y < 0:
+                frac = max(0.0, (robot_y - (y_stop_yellow - 0.02)) / 0.30)
+                v_y = max(v_y, -self.max_v * (frac ** 1.5))
+                if robot_y <= y_stop_yellow:
+                    v_y = max(0.0, v_y)
+            # Flanco inferior (y <= -y_stop_yellow tentando subir)
+            elif robot_y <= -y_stop_yellow + 0.02 and v_y > 0:
+                frac = max(0.0, ((-y_stop_yellow + 0.02) - robot_y) / 0.30)
+                v_y = min(v_y, self.max_v * (frac ** 1.5))
+                if robot_y >= -y_stop_yellow:
+                    v_y = min(0.0, v_y)
+
+        # -------------------------------------------------------------
+        # 2. Área de Pênalti Própria (Azul - Esquerda: x < -1.75m, |y| < 0.675m)
+        # Limite de parada seguro: x >= -1.63m
+        # -------------------------------------------------------------
+        x_stop_blue = -half_len + pen_len + r_radius + 0.03  # ~ -1.63m
+
+        # Parede frontal da área azul
+        if abs(robot_y) < y_stop_yellow:
+            if robot_x <= x_stop_blue:
+                v_x = max(0.0, v_x)
+                v_x = 1.5 * min(1.0, (x_stop_blue - robot_x + 0.01) / 0.03)
+            elif robot_x <= x_stop_blue + d_brake and v_x < 0:
+                frac = max(0.0, (robot_x - x_stop_blue) / d_brake)
+                v_x = max(v_x, -self.max_v * (frac ** 1.5))
+
+        # Paredes laterais da área azul
+        if robot_x <= x_stop_blue:
+            if robot_y >= y_stop_yellow - 0.02 and v_y < 0:
+                frac = max(0.0, (robot_y - (y_stop_yellow - 0.02)) / 0.30)
+                v_y = max(v_y, -self.max_v * (frac ** 1.5))
+                if robot_y <= y_stop_yellow:
+                    v_y = max(0.0, v_y)
+            elif robot_y <= -y_stop_yellow + 0.02 and v_y > 0:
+                frac = max(0.0, ((-y_stop_yellow + 0.02) - robot_y) / 0.30)
+                v_y = min(v_y, self.max_v * (frac ** 1.5))
+                if robot_y >= -y_stop_yellow:
+                    v_y = min(0.0, v_y)
+
+        # -------------------------------------------------------------
+        # 3. Limites Externos do Campo (Paredes perimetrais)
+        # -------------------------------------------------------------
+        x_field_max = half_len - r_radius - 0.03   # ~2.13m
+        x_field_min = -half_len + r_radius + 0.03  # ~ -2.13m
+        y_field_max = half_wid - r_radius - 0.03   # ~1.38m
+        y_field_min = -half_wid + r_radius + 0.03  # ~ -1.38m
+
+        # Parede direita
+        if robot_x >= x_field_max:
+            v_x = min(0.0, v_x)
+            v_x = -1.0 * min(1.0, (robot_x - x_field_max + 0.01) / 0.03)
+        elif robot_x >= x_field_max - d_brake and v_x > 0:
+            frac = max(0.0, (x_field_max - robot_x) / d_brake)
+            v_x = min(v_x, self.max_v * (frac ** 1.5))
+
+        # Parede esquerda
+        if robot_x <= x_field_min:
+            v_x = max(0.0, v_x)
+            v_x = 1.0 * min(1.0, (x_field_min - robot_x + 0.01) / 0.03)
+        elif robot_x <= x_field_min + d_brake and v_x < 0:
+            frac = max(0.0, (robot_x - x_field_min) / d_brake)
+            v_x = max(v_x, -self.max_v * (frac ** 1.5))
+
+        # Parede superior
+        if robot_y >= y_field_max:
+            v_y = min(0.0, v_y)
+            v_y = -1.0 * min(1.0, (robot_y - y_field_max + 0.01) / 0.03)
+        elif robot_y >= y_field_max - d_brake and v_y > 0:
+            frac = max(0.0, (y_field_max - robot_y) / d_brake)
+            v_y = min(v_y, self.max_v * (frac ** 1.5))
+
+        # Parede inferior
+        if robot_y <= y_field_min:
+            v_y = max(0.0, v_y)
+            v_y = 1.0 * min(1.0, (y_field_min - robot_y + 0.01) / 0.03)
+        elif robot_y <= y_field_min + d_brake and v_y < 0:
+            frac = max(0.0, (robot_y - y_field_min) / d_brake)
+            v_y = max(v_y, -self.max_v * (frac ** 1.5))
+
+        return v_x, v_y
+
+    def convert_actions(self, action, angle, robot_x=None, robot_y=None):
+        """Desnormaliza velocidades do referencial global para o referencial local do robô, com filtro de parede virtual."""
         v_x = float(action[0] * self.max_v)
         v_y = float(action[1] * self.max_v)
         v_theta = float(action[2] * self.max_w)
+
+        # Parede virtual cinemática rígida (impede entrada nas áreas proibidas)
+        if robot_x is not None and robot_y is not None:
+            v_x, v_y = self._apply_virtual_walls(robot_x, robot_y, v_x, v_y)
 
         # Rotação para referencial local
         v_x_local = v_x * np.cos(angle) + v_y * np.sin(angle)
@@ -326,13 +447,14 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         return v_x_local, v_y_local, v_theta
 
     def _get_multi_agent_commands(self, actions_dict: Dict[str, np.ndarray]) -> List[Robot]:
-        """Gera a lista de comandos para os 6 robôs do simulador."""
+        """Gera a lista de comandos para os 6 robôs do simulador com parede virtual cinemática."""
         commands = []
 
         # Robô Azul 0
         act0 = actions_dict.get("blue_0", np.zeros(4, dtype=np.float32))
-        angle0 = np.deg2rad(self.frame.robots_blue[0].theta)
-        v_x0, v_y0, v_th0 = self.convert_actions(act0, angle0)
+        r0 = self.frame.robots_blue[0]
+        angle0 = np.deg2rad(r0.theta)
+        v_x0, v_y0, v_th0 = self.convert_actions(act0, angle0, robot_x=r0.x, robot_y=r0.y)
         kick0 = self.kick_speed_x if act0[3] > 0 else 0.0
         commands.append(
             Robot(
@@ -349,8 +471,9 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
 
         # Robô Azul 1
         act1 = actions_dict.get("blue_1", np.zeros(4, dtype=np.float32))
-        angle1 = np.deg2rad(self.frame.robots_blue[1].theta)
-        v_x1, v_y1, v_th1 = self.convert_actions(act1, angle1)
+        r1 = self.frame.robots_blue[1]
+        angle1 = np.deg2rad(r1.theta)
+        v_x1, v_y1, v_th1 = self.convert_actions(act1, angle1, robot_x=r1.x, robot_y=r1.y)
         kick1 = self.kick_speed_x if act1[3] > 0 else 0.0
         commands.append(
             Robot(
@@ -480,11 +603,11 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             dribbler=False,
         )
 
-    def _is_inside_penalty_area(self, x: float, y: float, is_yellow_area: bool = True) -> bool:
-        """Verifica se (x, y) está dentro da área de pênalti SSL-EL (1.35m x 0.50m)."""
-        half_pen_w = self.field.penalty_width / 2  # 0.675m
-        pen_len = self.field.penalty_length       # 0.50m
-        half_field_len = self.field.length / 2    # 2.25m
+    def _is_inside_penalty_area(self, x: float, y: float, is_yellow_area: bool = True, margin: float = 0.0) -> bool:
+        """Verifica se (x, y) está dentro da área de pênalti SSL-EL (1.35m x 0.50m), com margem configurável."""
+        half_pen_w = (self.field.penalty_width / 2.0) + margin  # 0.675m + margin
+        pen_len = self.field.penalty_length + margin            # 0.50m + margin
+        half_field_len = self.field.length / 2.0                # 2.25m
 
         if is_yellow_area:
             in_x = (x > half_field_len - pen_len)
@@ -682,7 +805,29 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         r1_reward = 0.0
 
         # ----------------------------------------------------
-        # 1. Eventos Terminais Globais (Gols e Saídas)
+        # 1. Violação Rígida de Regras e Limites de Campo (PRIORIDADE ABSOLUTA)
+        # ----------------------------------------------------
+        for i, robot in enumerate([r0, r1]):
+            # Invasão de área de pênalti (adversária ou própria): anulação imediata de qualquer gol
+            if self._is_inside_penalty_area(robot.x, robot.y, is_yellow_area=True) or \
+               self._is_inside_penalty_area(robot.x, robot.y, is_yellow_area=False):
+                area_pen = -30.0
+                shared_reward += area_pen
+                done = True
+                self.reward_shaping_total["area_violation"] += area_pen
+                reward_dict = {a: shared_reward for a in self.agents}
+                return reward_dict, done, False
+
+            # Fora do campo
+            if abs(robot.x) > (half_len + 0.05) or abs(robot.y) > (half_wid + 0.05):
+                shared_reward -= 10.0
+                done = True
+                self.reward_shaping_total["out_of_bounds"] -= 10.0
+                reward_dict = {a: shared_reward for a in self.agents}
+                return reward_dict, done, False
+
+        # ----------------------------------------------------
+        # 2. Eventos Terminais Globais (Gols e Saídas de Bola)
         # ----------------------------------------------------
         # Gol Marcado Válido (+50.0 Compartilhado)
         if ball.x > half_len and abs(ball.y) < goal_w:
@@ -715,28 +860,6 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             self.reward_shaping_total["ball_out"] -= 2.0
             reward_dict = {a: shared_reward for a in self.agents}
             return reward_dict, done, False
-
-        # ----------------------------------------------------
-        # 2. Violação de Regras e Limites de Campo
-        # ----------------------------------------------------
-        for i, robot in enumerate([r0, r1]):
-            # Fora do campo
-            if abs(robot.x) > (half_len + 0.05) or abs(robot.y) > (half_wid + 0.05):
-                shared_reward -= 5.0
-                done = True
-                self.reward_shaping_total["out_of_bounds"] -= 5.0
-                reward_dict = {a: shared_reward for a in self.agents}
-                return reward_dict, done, False
-
-            # Invasão de área de pênalti
-            if self._is_inside_penalty_area(robot.x, robot.y, is_yellow_area=True) or \
-               self._is_inside_penalty_area(robot.x, robot.y, is_yellow_area=False):
-                area_pen = -3.0
-                shared_reward += area_pen
-                done = True
-                self.reward_shaping_total["area_violation"] += area_pen
-                reward_dict = {a: shared_reward for a in self.agents}
-                return reward_dict, done, False
 
         # ----------------------------------------------------
         # 3. Penalidade de Anti-Colisão Suave entre Companheiros
