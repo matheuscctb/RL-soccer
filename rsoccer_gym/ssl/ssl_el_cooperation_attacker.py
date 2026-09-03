@@ -25,6 +25,7 @@ class SSLELRenderField(VSSRenderField):
     _scale = 180
 
 
+
 class SSLELCooperationAttackerEnv(SSLBaseEnv):
     """
     Ambiente Multi-Agente SSL Entry Level (SSL-EL) para Cooperação de Atacantes (2 Atacantes Azuis vs Defesa):
@@ -38,7 +39,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         * blue_0: Robô Azul 0 (Passador / Atacante 1)
         * blue_1: Robô Azul 1 (Receptor / Atacante 2)
     - Blue 2: Robô de apoio defensivo estático
-    - Amarelos: Goleiro (Amarelo 0) + 2 Defensores (Amarelos 1 e 2)
+    - Amarelos: Goleiro Ativo (Amarelo 0) + 2 Defensores Estáticos (Amarelos 1 e 2)
     - Ações Contínuas por Agente (4): [v_x, v_y, v_theta, kick_x]
     - Suporte nativo a CTDE (Treinamento Centralizado, Execução Descentralizada) para MAPPO.
     """
@@ -124,7 +125,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.max_v = 1.5        # Velocidade linear máxima (m/s)
         self.max_w = 5.0       # Velocidade angular máxima (rad/s)
         self.kick_speed_x = 3.0 # Velocidade máxima do chute frontal (m/s)
-        self.max_steps = 600    # Duração máxima do episódio (15 segundos a 40Hz)
+        self.max_steps = 800    # Duração máxima do episódio (20 segundos a 40Hz)
 
         # Variáveis internas de rastreamento de passes e recompensas
         self.pass_in_progress = False
@@ -378,8 +379,10 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             )
         )
 
-        # Robôs Amarelos (Goleiro e Defensores)
-        for i in range(self.n_robots_yellow):
+        # Robôs Amarelos: Goleiro (Amarelo 0) ativo e Defensores (Amarelos 1 e 2) estáticos
+        commands.append(self._get_goalkeeper_command())
+
+        for i in range(1, self.n_robots_yellow):
             commands.append(
                 Robot(
                     yellow=True,
@@ -394,6 +397,88 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             )
 
         return commands
+
+    def _get_goalkeeper_command(self) -> Robot:
+        """
+        Controlador cinemático reativo do Goleiro Amarelo (yellow_0):
+        1. Em jogo normal (bola fora da grande área):
+           - Desloca-se ao longo da linha de meta apenas no eixo Y buscando o Y da bola.
+           - Mantém-se estritamente dentro dos limites da largura do gol (com margem para não colidir com os postes).
+           - Mantém orientação frontal para o campo (theta = 180°).
+           - Se a bola for chutada em direção a ele e se aproximar, dispara o chute frontal para rebater.
+        2. Bola dentro da grande área (área penal):
+           - Como os robôs atacantes azuis não podem entrar na área de pênalti, o goleiro avança até a bola
+             e a chuta com velocidade máxima para fora da área, devolvendo-a para o jogo.
+           - Assim que a bola sai da grande área, o goleiro retorna à linha de meta e retoma a cobertura em Y.
+        """
+        gk = self.frame.robots_yellow[0]
+        ball = self.frame.ball
+
+        half_len = self.field.length / 2          # 2.25m
+        half_pen_w = self.field.penalty_width / 2 # 0.675m
+        pen_len = self.field.penalty_length       # 0.50m
+        pen_line_x = half_len - pen_len           # 1.75m
+        gk_line_x = half_len - 0.12               # 2.13m (linha do gol)
+        max_gk_y = (self.field.goal_width / 2) - 0.07 # ~0.28m (limite seguro dentro da baliza)
+
+        # Checar se a bola está dentro da área penal amarela
+        in_penalty = (ball.x > pen_line_x) and (abs(ball.y) < half_pen_w)
+
+        kick_speed = 0.0
+        dist_ball = math.hypot(gk.x - ball.x, gk.y - ball.y)
+
+        if in_penalty:
+            # Bola dentro da área: posicionar-se logo atrás da bola (no sentido +X) e chutar para -X (campo)
+            target_x = float(np.clip(ball.x + 0.10, pen_line_x + 0.05, gk_line_x))
+            target_y = float(np.clip(ball.y, -(half_pen_w - 0.08), half_pen_w - 0.08))
+            # Disparar chute quando a bola estiver no raio de alcance frontal
+            if dist_ball < 0.25 and (ball.x <= gk.x + 0.05):
+                kick_speed = self.kick_speed_x
+        else:
+            # Bola fora da área: mover-se exclusivamente na linha do gol buscando o Y da bola
+            target_x = gk_line_x
+            target_y = float(np.clip(ball.y, -max_gk_y, max_gk_y))
+            # Se a bola vier em direção ao gol e estiver próxima ao goleiro, rebater com chute
+            if dist_ball < 0.22 and (ball.x <= gk.x + 0.03):
+                kick_speed = self.kick_speed_x
+
+        # Disparo imediato se o sensor infravermelho acusar bola colada
+        if gk.infrared:
+            kick_speed = self.kick_speed_x
+
+        # Controlador P para velocidade no referencial global
+        kp_pos = 5.0
+        err_x = target_x - gk.x
+        err_y = target_y - gk.y
+        v_x_glob = np.clip(kp_pos * err_x, -self.max_v, self.max_v)
+        v_y_glob = np.clip(kp_pos * err_y, -self.max_v, self.max_v)
+
+        # Manter orientação frontal apontada para o campo adversário (theta = 180°)
+        target_angle_deg = 180.0
+        err_theta = math.radians(target_angle_deg) - math.radians(gk.theta)
+        err_theta = (err_theta + math.pi) % (2 * math.pi) - math.pi
+        v_th = np.clip(4.0 * err_theta, -self.max_w, self.max_w)
+
+        # Converter velocidades do referencial global para o referencial local do robô
+        angle_rad = np.deg2rad(gk.theta)
+        v_x_loc = v_x_glob * np.cos(angle_rad) + v_y_glob * np.sin(angle_rad)
+        v_y_loc = -v_x_glob * np.sin(angle_rad) + v_y_glob * np.cos(angle_rad)
+
+        v_norm = math.hypot(v_x_loc, v_y_loc)
+        if v_norm > self.max_v:
+            v_x_loc = (v_x_loc / v_norm) * self.max_v
+            v_y_loc = (v_y_loc / v_norm) * self.max_v
+
+        return Robot(
+            yellow=True,
+            id=0,
+            v_x=float(v_x_loc),
+            v_y=float(v_y_loc),
+            v_theta=float(v_th),
+            kick_v_x=float(kick_speed),
+            kick_v_z=0.0,
+            dribbler=False,
+        )
 
     def _is_inside_penalty_area(self, x: float, y: float, is_yellow_area: bool = True) -> bool:
         """Verifica se (x, y) está dentro da área de pênalti SSL-EL (1.35m x 0.50m)."""

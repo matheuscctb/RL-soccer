@@ -30,7 +30,7 @@ Dois robôs atacantes azuis aprendem a cooperar dinamicamente (trocar passes rá
 * **Liga**: Small Size League - Entry Level (SSL-EL).
 * **Robôs Ativos**:
   * 🔵 **Time Azul**: `blue_0` e `blue_1` (Atacantes cooperativos controlados por RL), `blue_2` (Apoio estático).
-  * 🟡 **Time Amarelo**: `yellow_0` (Goleiro), `yellow_1` e `yellow_2` (Defensores).
+  * 🟡 **Time Amarelo**: `yellow_0` (Goleiro ativo com marcação em Y na meta e expulsão da bola da área), `yellow_1` e `yellow_2` (Defensores estáticos).
 * **Algoritmo**: **MAPPO** Contínuo Gaussiano.
 * **Atuadores**: `dribbler` **desativado** (100% desligado) e chutador frontal (`kick_v_x`) acionado por impacto.
 
@@ -88,7 +88,7 @@ O ambiente implementa com precisão milimétrica as regras e dimensões da categ
 | **Meta / Traves do Gol** | Largura: $0.70\text{ m}$, Profundidade: $0.18\text{ m}$ |
 | **Círculo Central** | Raio: $0.50\text{ m}$ |
 | **Dimensões do Robô** | Raio: $0.09\text{ m}$ (Diâmetro: $18\text{ cm}$) |
-| **Duração do Episódio** | $600\text{ passos}$ a $40\text{ Hz}$ ($15.0\text{ segundos}$) |
+| **Duração do Episódio** | $800\text{ passos}$ a $40\text{ Hz}$ ($20.0\text{ segundos}$) |
 
 ---
 
@@ -168,8 +168,11 @@ A cada checkpoint (a cada $100.000$ passos por padrão) e ao término do treinam
 git clone -b gpu https://github.com/matheuscctb/RL-soccer.git
 cd RL-soccer
 
-# 2. Criar o ambiente virtual (Python 3.10 recomendado)
-python3 -m venv venv
+# 2. Criar o ambiente virtual com Python 3.10 (Obrigatório para rc-robosim)
+# Usando uv (mais rápido e gerencia o Python automaticamente):
+uv venv venv --python 3.10
+# Ou usando venv padrão:
+# python3.10 -m venv venv
 
 # 3. Ativar o ambiente virtual
 # No Linux:
@@ -177,12 +180,15 @@ source venv/bin/activate
 # No Windows:
 # venv\Scripts\activate
 
-# 4. Atualizar o pip e instalar as dependências com suporte a CUDA
-pip install --upgrade pip
-pip install -r requirements.txt
+# 4. Instalar as dependências com suporte a CUDA
+uv pip install -r requirements.txt
+# Ou via pip padrão:
+# pip install --upgrade pip && pip install -r requirements.txt
 
 # 5. Instalar o rsoccer-gym localmente em modo editável
-pip install -e .
+uv pip install -e .
+# Ou via pip padrão:
+# pip install -e .
 ```
 
 

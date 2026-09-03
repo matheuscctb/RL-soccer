@@ -1,8 +1,9 @@
 # ==============================================================================
 # RL-Soccer: Dependências para Treinamento MAPPO e Simulação SSL-EL (Modo GPU / CUDA)
-# REQUISITO: Crie e ative um ambiente virtual antes de instalar:
-#   python3 -m venv venv && source venv/bin/activate
-#   pip install -r requirements.txt
+# REQUISITO: Crie e ative um ambiente virtual com Python 3.10 antes de instalar:
+#   uv venv venv --python 3.10  (ou: python3.10 -m venv venv)
+#   source venv/bin/activate
+#   uv pip install -r requirements.txt && uv pip install -e .
 # ==============================================================================
 
 # Repositório oficial do PyTorch com suporte a CUDA 12.1+ para placas NVIDIA (ex: RTX 3060)
@@ -20,6 +21,7 @@ pygame>=2.1.0
 # Monitoramento, Barra de Progresso e Métricas
 tensorboard>=2.10.0
 tqdm>=4.65.0
+wandb>=0.15.0
 
 # Exportação e Inferência de Modelos em Tempo Real (Aceleração GPU)
 onnx>=1.14.0
