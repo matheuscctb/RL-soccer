@@ -135,12 +135,11 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         self.pass_origin_pos = None
         self.shot_opp_active = False
         # ---------------------------------------------------------------
-        # Controle de Papel Dinâmico (Condutor / Ala) por Função de Custo
+        # Controle de Papel Dinâmico (Condutor / Ala) por Distância e Histerese Robusta
         # ---------------------------------------------------------------
         self.current_lead = None
-        self.ROLE_W_DIST = 1.0                  # w1: peso da distância até a bola (r_i)
-        self.ROLE_W_ANGLE = 0.4                 # w2: peso do desalinhamento angular (1 - cos theta_i)
-        self.ROLE_HYSTERESIS_DISCOUNT = 0.85    # fator (<1) que "desconta" o custo do líder atual
+        self.ROLE_HYSTERESIS_MARGIN = 0.35      # (m) margem de histerese absoluta para troca de papel
+        self.ROLE_POSSESSION_LOCK_DIST = 0.25   # (m) raio de trava de posse (líder não perde o papel)
 
         # Margens das barreiras suaves de contenção (individuais, não terminam o episódio)
         self.BOUNDARY_WARN_MARGIN = 0.15           # (m) zona de alerta antes da borda rígida do campo
@@ -290,6 +289,7 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         # Sorteio de qual robô nasce como Condutor (perto da bola) e qual nasce como Ala.
         conductor_id = random.choice([0, 1])
         wing_id = 1 - conductor_id
+        self.current_lead = f"blue_{conductor_id}"
 
         # Robô Condutor (posicionado atrás da bola, apontando para ela)
         cond_x = ball_x - random.uniform(0.20, 0.40)
@@ -774,61 +774,39 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         """Retorna observações descentralizadas para todos os agentes."""
         return {agent: self._get_agent_observation(agent) for agent in self.agents}
 
-    def _role_cost(self, robot: Robot, ball: Ball) -> Tuple[float, float]:
-        """
-        Custo de um robô assumir o papel de Condutor:
-
-            C_i = w1 * r_i + w2 * (1 - cos(theta_i))
-
-        - r_i: distância euclidiana do robô até a bola.
-        - theta_i: ângulo entre a orientação atual do robô e a direção até a
-          bola (theta_i = 0 => robô já está de frente para a bola).
-
-        Custo menor indica candidato melhor (mais perto e mais alinhado).
-        Retorna (custo, r_i) — r_i é reaproveitado pelo restante do shaping.
-        """
-        vec_to_ball = np.array([ball.x - robot.x, ball.y - robot.y])
-        dist = float(np.linalg.norm(vec_to_ball))
-
-        if dist > 1e-6:
-            dir_to_ball = vec_to_ball / dist
-            heading = np.array([np.cos(np.deg2rad(robot.theta)), np.sin(np.deg2rad(robot.theta))])
-            cos_theta = float(np.clip(np.dot(heading, dir_to_ball), -1.0, 1.0))
-        else:
-            cos_theta = 1.0  # bola colada no robô: desalinhamento considerado nulo
-
-        cost = self.ROLE_W_DIST * dist + self.ROLE_W_ANGLE * (1.0 - cos_theta)
-        return cost, dist
-
     def _resolve_lead_role(self, r0: Robot, r1: Robot, ball: Ball) -> Tuple[bool, float, float]:
         """
-        Decide qual robô é o "Condutor" (perto e alinhado com a bola) neste
-        passo, usando a função de custo C_i = w1*r_i + w2*(1-cos theta_i) com
-        histerese multiplicativa para evitar oscilação rápida de papel: o
-        custo do líder atual é descontado (ROLE_HYSTERESIS_DISCOUNT < 1) antes
-        da comparação, então o outro robô só assume a liderança se seu custo
-        real for claramente menor — inclusive quando a bola rola para perto
-        dele, já que isso derruba r_i e portanto C_i rapidamente.
+        Decide qual robô é o "Condutor" baseado exclusivamente na distância euclidiana pura
+        até a bola, com Trava de Posse e Histerese Absoluta (ROLE_HYSTERESIS_MARGIN).
+
+        Elimina a instabilidade causada por variações de ângulo/rotação do corpo e
+        impede que os robôs fiquem trocando de papel repetidamente (flip-flop) ou fujam da bola.
 
         Retorna (is_r0_lead, dist_r0_b, dist_r1_b).
         """
-        cost_0, dist_r0_b = self._role_cost(r0, ball)
-        cost_1, dist_r1_b = self._role_cost(r1, ball)
+        dist_r0_b = float(np.linalg.norm([ball.x - r0.x, ball.y - r0.y]))
+        dist_r1_b = float(np.linalg.norm([ball.x - r1.x, ball.y - r1.y]))
 
         if self.current_lead is None:
-            self.current_lead = "blue_0" if cost_0 <= cost_1 else "blue_1"
+            self.current_lead = "blue_0" if dist_r0_b <= dist_r1_b else "blue_1"
             return self.current_lead == "blue_0", dist_r0_b, dist_r1_b
 
-        if self.current_lead == "blue_0":
-            lead_cost, other_cost, other_agent = cost_0, cost_1, "blue_1"
-        else:
-            lead_cost, other_cost, other_agent = cost_1, cost_0, "blue_0"
+        lead_robot = r0 if self.current_lead == "blue_0" else r1
+        lead_dist = dist_r0_b if self.current_lead == "blue_0" else dist_r1_b
+        other_dist = dist_r1_b if self.current_lead == "blue_0" else dist_r0_b
 
-        discounted_lead_cost = lead_cost * self.ROLE_HYSTERESIS_DISCOUNT
-        if other_cost < discounted_lead_cost:
-            self.current_lead = other_agent
+        # 1. Trava de Posse: se o líder atual tem a bola controlada ou está dentro
+        # do raio de posse (< 25cm), ele NUNCA perde a liderança enquanto manobra para finalizar.
+        if lead_robot.infrared or lead_dist < self.ROLE_POSSESSION_LOCK_DIST:
+            return self.current_lead == "blue_0", dist_r0_b, dist_r1_b
+
+        # 2. Histerese Absoluta Robusta: o parceiro só assume se estiver significativamente
+        # mais próximo da bola do que o líder atual (diferença >= ROLE_HYSTERESIS_MARGIN).
+        if other_dist < (lead_dist - self.ROLE_HYSTERESIS_MARGIN):
+            self.current_lead = "blue_1" if self.current_lead == "blue_0" else "blue_0"
 
         return self.current_lead == "blue_0", dist_r0_b, dist_r1_b
+
 
     def _calculate_multi_agent_reward_and_done(self) -> Tuple[Dict[str, float], bool, bool]:
         """
@@ -1013,18 +991,24 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
         dist_b2g = float(np.linalg.norm(goal_target - ball_pos))
         dir_b2g = (goal_target - ball_pos) / max(dist_b2g, 1e-6)
 
-        # Alvo do condutor (10cm atrás da bola apontando para o gol)
-        target_conductor = ball_pos - 0.10 * dir_b2g
+        # Designar papéis para cada robô via distância pura e histerese robusta
+        is_r0_lead, dist_r0_b, dist_r1_b = self._resolve_lead_role(r0, r1, ball)
+        dist_lead_b = dist_r0_b if is_r0_lead else dist_r1_b
+
+        # Alvo dinâmico do condutor:
+        # Se estiver longe (> 30cm), mira direto na bola para aproximação agressiva (nunca foge da bola).
+        # Se estiver perto (<= 30cm), transiciona suavemente para 10cm atrás da bola apontando para o gol.
+        if dist_lead_b > 0.30:
+            target_conductor = ball_pos
+        else:
+            blend = dist_lead_b / 0.30
+            target_conductor = ball_pos - (1.0 - blend) * 0.10 * dir_b2g
 
         # Alvo suave e contínuo do 2º atacante (sem flips descontínuos)
         wing_target_x = float(np.clip(ball.x + 0.60, -0.2, half_len - 0.70))
         wing_target_y = float(-0.70 * np.tanh(2.0 * ball.y))
         target_wing = np.array([wing_target_x, wing_target_y])
 
-        # Designar alvos para cada robô via função de custo com histerese (evita
-        # flip-flop e o bug de "esperar" o parceiro quando a bola já está perto
-        # do agente que era ala).
-        is_r0_lead, dist_r0_b, dist_r1_b = self._resolve_lead_role(r0, r1, ball)
         target_0 = target_conductor if is_r0_lead else target_wing
         target_1 = target_wing if is_r0_lead else target_conductor
 
@@ -1060,7 +1044,14 @@ class SSLELCooperationAttackerEnv(SSLBaseEnv):
             last_r0 = self.last_frame.robots_blue[0]
             last_r1 = self.last_frame.robots_blue[1]
 
-            last_target_cond = last_ball_pos - 0.10 * last_dir_b2g
+            last_lead_rbt = last_r0 if is_r0_lead else last_r1
+            last_dist_lead_b = float(np.linalg.norm([last_ball.x - last_lead_rbt.x, last_ball.y - last_lead_rbt.y]))
+            if last_dist_lead_b > 0.30:
+                last_target_cond = last_ball_pos
+            else:
+                last_blend = last_dist_lead_b / 0.30
+                last_target_cond = last_ball_pos - (1.0 - last_blend) * 0.10 * last_dir_b2g
+
             last_wing_x = float(np.clip(last_ball.x + 0.60, -0.2, half_len - 0.70))
             last_wing_y = float(-0.70 * np.tanh(2.0 * last_ball.y))
             last_target_w = np.array([last_wing_x, last_wing_y])
